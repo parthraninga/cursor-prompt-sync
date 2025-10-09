@@ -1,0 +1,236 @@
+{
+  "name": "cursor-prompt-sync",
+  "displayName": "Cursor Prompt Sync",
+  "description": "AI Prompt Analytics & PostgreSQL Integration for automated Cursor prompt collection and storage",
+  "version": "1.0.0",
+  "publisher": "YorkIE",
+  "author": "York.IE",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Pushkar111/cursor-prompt-extension.git"
+  },
+  "icon": "images/Cursor-logo-white.png",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "cursor-sql-runner.setupPostgres",
+        "title": "Auto-Setup PostgreSQL Connection",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.configureAutoScheduler",
+        "title": "Configure Auto-Scheduler Interval",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.configureAutoSchedulerPostgres",
+        "title": "Configure PostgreSQL for Auto-Scheduler",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.startAutoScheduler",
+        "title": "Start Auto-Scheduler",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.stopAutoScheduler",
+        "title": "Stop Auto-Scheduler",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.toggleAutoScheduler",
+        "title": "Toggle Auto-Scheduler",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.showAutoSchedulerStatus",
+        "title": "Show Auto-Scheduler Status",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.getLastDatapoint",
+        "title": "Get Last Datapoint from PostgreSQL",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.configureUserId",
+        "title": "Configure User ID",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.configureDatabasePath",
+        "title": "Configure Local Database Path",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.switchPostgresDatabase",
+        "title": "Switch PostgreSQL Database/Table",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.showDatabaseInfo",
+        "title": "Show Database Configuration",
+        "category": "Cursor Prompt Sync"
+      }
+    ],
+    "menus": {
+      "commandPalette": [
+        {
+          "command": "cursor-sql-runner.setupPostgres",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.configureAutoScheduler",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.configureAutoSchedulerPostgres",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.startAutoScheduler",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.stopAutoScheduler",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.toggleAutoScheduler",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.showAutoSchedulerStatus",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.getLastDatapoint",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.configureUserId",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.configureDatabasePath",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.switchPostgresDatabase",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.showDatabaseInfo",
+          "when": "true"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "cursor-sql-runner.toggleAutoScheduler",
+        "key": "ctrl+shift+a",
+        "mac": "cmd+shift+a"
+      },
+      {
+        "command": "cursor-sql-runner.showAutoSchedulerStatus",
+        "key": "ctrl+shift+t",
+        "mac": "cmd+shift+t"
+      },
+      {
+        "command": "cursor-sql-runner.showDatabaseInfo",
+        "key": "ctrl+shift+d",
+        "mac": "cmd+shift+d"
+      }
+    ],
+    "configuration": {
+      "title": "Cursor Prompt Sync",
+      "properties": {
+        "cursorSqlRunner.databasePath": {
+          "type": "string",
+          "default": "",
+          "description": "Path to Cursor database file (auto-detected if not set)"
+        },
+        "cursorSqlRunner.outputDirectory": {
+          "type": "string",
+          "default": "./cursor-query-results", 
+          "description": "Directory to save auto-scheduler results"
+        },
+        "cursorSqlRunner.postgresHost": {
+          "type": "string",
+          "default": "3.108.9.100",
+          "description": "PostgreSQL server host"
+        },
+        "cursorSqlRunner.postgresPort": {
+          "type": "number",
+          "default": 5432,
+          "description": "PostgreSQL server port"
+        },
+        "cursorSqlRunner.postgresDatabase": {
+          "type": "string",
+          "default": "cursor_analytics",
+          "description": "PostgreSQL database name"
+        },
+        "cursorSqlRunner.postgresUser": {
+          "type": "string",
+          "default": "postgres",
+          "description": "PostgreSQL username"
+        },
+        "cursorSqlRunner.postgresPassword": {
+          "type": "string",
+          "default": "postgres",
+          "description": "PostgreSQL password"
+        },
+        "cursorSqlRunner.postgresTableName": {
+          "type": "string",
+          "default": "cursor_query_results",
+          "description": "PostgreSQL table name for storing cursor query results"
+        },
+        "cursorSqlRunner.autoSchedulerFile": {
+          "type": "string",
+          "default": "",
+          "description": "SQL file path for auto-scheduler"
+        },
+        "cursorSqlRunner.autoSchedulerInterval": {
+          "type": "number",
+          "default": 60,
+          "description": "Auto-scheduler interval in minutes"
+        },
+        "cursorSqlRunner.userId": {
+          "type": "string",
+          "default": "",
+          "description": "User ID for PostgreSQL records (auto-detected from Cursor cached email if not set)"
+        },
+        "cursorSqlRunner.hasShownSetupNotice": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the setup notification has been shown"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0",
+    "@types/node": "16.x",
+    "@types/pg": "^8.10.9",
+    "typescript": "^4.9.4"
+  },
+  "dependencies": {
+    "pg": "^8.11.3",
+    "sqlite3": "^5.1.6"
+  }
+}
