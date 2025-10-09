@@ -783,8 +783,26 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
             this.lastExecution = new Date(lastExecutionStr);
         }
 
-        // Don't automatically restart - user needs to manually start
-        this.isRunning = false;
+        // Store the previous running state - we'll use this for auto-restart
+        const wasRunning = this.context.workspaceState.get('autoScheduler.isRunning', false);
+        this.isRunning = false; // Always start as stopped, then auto-restart if needed
+        
+        // Store for later auto-restart decision
+        this.context.workspaceState.update('autoScheduler.wasRunning', wasRunning);
+    }
+
+    /**
+     * Check if auto-restart should happen (called from extension.ts after setup)
+     */
+    public shouldAutoRestart(): boolean {
+        return this.context.workspaceState.get('autoScheduler.wasRunning', false);
+    }
+
+    /**
+     * Clear the auto-restart flag (called after successful restart)
+     */
+    public clearAutoRestartFlag(): void {
+        this.context.workspaceState.update('autoScheduler.wasRunning', false);
     }
 
     /**
