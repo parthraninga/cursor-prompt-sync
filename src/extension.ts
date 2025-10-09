@@ -59,16 +59,73 @@ function detectCursorDatabasePath(): string | null {
 }
 
 /**
- * Check if configuration is complete
+ * Check if PostgreSQL configuration is complete
  */
-function isConfigurationComplete(): boolean {
+function isPostgresConfigurationComplete(): boolean {
     const config = vscode.workspace.getConfiguration('cursorSqlRunner');
     
-    const supabaseUrl = config.get<string>('supabaseUrl', '');
-    const supabaseKey = config.get<string>('supabaseKey', '');
+    const postgresHost = config.get<string>('postgresHost', '');
+    const postgresDatabase = config.get<string>('postgresDatabase', '');
+    const postgresUser = config.get<string>('postgresUser', '');
+    const postgresPassword = config.get<string>('postgresPassword', '');
     const databasePath = config.get<string>('databasePath', '');
     
-    return !!(supabaseUrl && supabaseKey && databasePath);
+    return !!(postgresHost && postgresDatabase && postgresUser && postgresPassword && databasePath);
+}
+
+/**
+ * Auto-setup PostgreSQL with default configuration
+ */
+async function autoSetupPostgreSQL(): Promise<boolean> {
+    try {
+        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
+        
+        // Force EC2 configuration values
+        const host = '3.108.9.100';
+        const port = 5432;
+        const database = 'cursor_analytics';
+        const user = 'postgres';
+        const tableName = 'cursor_query_results';
+        
+        // Check if password is already configured
+        let password = config.get<string>('postgresPassword', '');
+        
+        if (!password) {
+            // Prompt for password on first setup only
+            const passwordInput = await vscode.window.showInputBox({
+                prompt: 'Enter PostgreSQL password for one-time setup (will be remembered)',
+                password: true,
+                ignoreFocusOut: true,
+                placeHolder: 'PostgreSQL password for 3.108.9.100',
+                validateInput: (value) => {
+                    if (!value) {
+                        return 'Password is required for PostgreSQL connection';
+                    }
+                    return null;
+                }
+            });
+
+            if (!passwordInput) {
+                console.log('❌ Auto-setup cancelled - password required');
+                return false;
+            }
+            password = passwordInput;
+        }
+        
+        // Update VS Code settings GLOBALLY
+        await config.update('postgresHost', host, vscode.ConfigurationTarget.Global);
+        await config.update('postgresPort', port, vscode.ConfigurationTarget.Global);
+        await config.update('postgresDatabase', database, vscode.ConfigurationTarget.Global);
+        await config.update('postgresUser', user, vscode.ConfigurationTarget.Global);
+        await config.update('postgresPassword', password, vscode.ConfigurationTarget.Global);
+        await config.update('postgresTableName', tableName, vscode.ConfigurationTarget.Global);
+        
+        console.log(`✅ Auto-configured PostgreSQL: ${host}:${port}/${database}`);
+        return true;
+    } catch (error: any) {
+        console.log(`❌ Auto-setup PostgreSQL failed: ${error.message}`);
+        return false;
+    }
 }
 
 /**
@@ -121,7 +178,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Smart configuration and auto-startup
     setTimeout(async () => {
         try {
-            console.log('🔍 Checking extension configuration...');
+            console.log('� Cursor Prompt Sync: Automatic initialization starting...');
             
             // Auto-configure missing settings
             const autoConfigured = await autoConfigureMissingSettings();
@@ -129,26 +186,84 @@ export function activate(context: vscode.ExtensionContext) {
                 console.log('✅ Auto-configured missing settings');
             }
             
-            // Check if configuration is complete
-            const isComplete = isConfigurationComplete();
+            // Check if PostgreSQL configuration is complete
+            let isPostgresComplete = isPostgresConfigurationComplete();
             
-            if (isComplete) {
-                console.log('✅ Configuration complete, starting auto-scheduler...');
+            if (!isPostgresComplete) {
+                console.log('🔧 PostgreSQL not configured, running auto-setup...');
+                
+                // Try automatic setup
+                const autoSetupSuccess = await autoSetupPostgreSQL();
+                if (autoSetupSuccess) {
+                    isPostgresComplete = true;
+                    console.log('✅ PostgreSQL auto-setup completed');
+                } else {
+                    console.log('⚠️ PostgreSQL auto-setup failed, will prompt user if needed');
+                }
+            }
+            
+            if (isPostgresComplete) {
+                console.log('✅ PostgreSQL configuration complete, initializing connection...');
                 
                 // Configure PostgreSQL silently
                 try {
                     await autoScheduler.configurePostgres(true);
-                    console.log('✅ PostgreSQL configured successfully');
+                    console.log('✅ PostgreSQL connection established successfully');
+                    
+                    // Check if auto-scheduler should be restarted (was running before reload)
+                    const shouldRestart = autoScheduler.shouldAutoRestart();
+                    
+                    if (shouldRestart) {
+                        // Restart the scheduler automatically (was running before reload)
+                        await autoScheduler.start(true);
+                        autoScheduler.clearAutoRestartFlag();
+                        console.log('✅ Auto-Scheduler restarted automatically (was running before reload)');
+                    } else {
+                        // Start for the first time
+                        await autoScheduler.start(true);
+                        console.log('✅ Auto-Scheduler started automatically (first time setup)');
+                    }
+                    
+                    // Show success notification only on first setup
+                    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
+                    const hasShownAutoSetupNotice = config.get<boolean>('hasShownAutoSetupNotice', false);
+                    
+                    if (!hasShownAutoSetupNotice) {
+                        vscode.window.showInformationMessage(
+                            '🚀 Cursor Prompt Sync is ready! PostgreSQL connected and auto-scheduler started.',
+                            'View Status'
+                        ).then(choice => {
+                            if (choice === 'View Status') {
+                                autoScheduler.showStatus();
+                            }
+                        });
+                        
+                        await config.update('hasShownAutoSetupNotice', true, vscode.ConfigurationTarget.Global);
+                    }
+                    
                 } catch (error: any) {
-                    console.log('⚠️ PostgreSQL configuration failed, continuing without database sync');
+                    console.log('⚠️ PostgreSQL connection failed:', error.message);
+                    
+                    // Only show setup prompt if auto-setup didn't work
+                    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
+                    const hasShownSetupNotice = config.get<boolean>('hasShownSetupNotice', false);
+                    
+                    if (!hasShownSetupNotice) {
+                        const choice = await vscode.window.showWarningMessage(
+                            'Cursor Prompt Sync: PostgreSQL connection failed. Setup required.',
+                            'Setup PostgreSQL', 'Skip'
+                        );
+                        
+                        if (choice === 'Setup PostgreSQL') {
+                            await vscode.commands.executeCommand('cursor-sql-runner.setupPostgres');
+                        }
+                        
+                        await config.update('hasShownSetupNotice', true, vscode.ConfigurationTarget.Global);
+                    }
                 }
                 
-                // Start the scheduler
-                await autoScheduler.start(true);
-                console.log('✅ Auto-Scheduler started automatically');
-                
             } else {
-                console.log('⚠️ Configuration incomplete. PostgreSQL setup required for full functionality.');
+                console.log('⚠️ PostgreSQL configuration incomplete. Setup required for full functionality.');
                 
                 // Show one-time notification about setup
                 const config = vscode.workspace.getConfiguration('cursorSqlRunner');
@@ -157,11 +272,11 @@ export function activate(context: vscode.ExtensionContext) {
                 if (!hasShownSetupNotice) {
                     const choice = await vscode.window.showInformationMessage(
                         'Cursor Prompt Sync needs PostgreSQL configuration for data storage. Configure now?',
-                        'Setup Supabase', 'Skip'
+                        'Setup PostgreSQL', 'Skip'
                     );
                     
-                    if (choice === 'Setup Supabase') {
-                        await vscode.commands.executeCommand('cursor-sql-runner.configureAutoSchedulerSupabase');
+                    if (choice === 'Setup PostgreSQL') {
+                        await vscode.commands.executeCommand('cursor-sql-runner.setupPostgres');
                     }
                     
                     // Mark that we've shown the notice
