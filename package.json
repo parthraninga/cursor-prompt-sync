@@ -1,7 +1,7 @@
 {
   "name": "cursor-prompt-sync",
   "displayName": "Cursor Prompt Sync",
-  "description": "AI Prompt Analytics & PostgreSQL Integration for automated Cursor prompt collection and storage",
+  "description": "AI Prompt Analytics & PostgreSQL Integration with automatic setup and persistent connections for seamless Cursor prompt collection",
   "version": "1.0.0",
   "publisher": "YorkIE",
   "author": "York.IE",
