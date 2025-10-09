@@ -212,7 +212,7 @@ The extension uses intelligent defaults for immediate productivity:
 
 ```json
 {
-  "cursorSqlRunner.postgresHost": "3.108.9.100",
+  "cursorSqlRunner.postgresHost": "your_host_ip",
   "cursorSqlRunner.postgresPort": 5432,
   "cursorSqlRunner.postgresDatabase": "cursor_analytics",
   "cursorSqlRunner.postgresUser": "postgres",
