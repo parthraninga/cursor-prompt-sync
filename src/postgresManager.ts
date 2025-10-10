@@ -462,11 +462,18 @@ export class PostgresManager {
             
             if (!userId) {
                 this.outputChannel.appendLine(`⚠️ No user_id configured - fetching last datapoint without user filter`);
-                query = `SELECT * FROM ${this.config.tableName} ORDER BY created_at DESC LIMIT 1`;
+                // Order by timestamp DESC to get the most recent prompt timestamp
+                query = `SELECT * FROM ${this.config.tableName} ORDER BY timestamp DESC LIMIT 1`;
             } else {
                 this.outputChannel.appendLine(`🔍 Fetching last datapoint for user: ${userId}`);
-                query = `SELECT * FROM ${this.config.tableName} WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1`;
+                // Order by timestamp DESC to get the most recent prompt timestamp for this user
+                query = `SELECT * FROM ${this.config.tableName} WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 1`;
                 values = [userId];
+            }
+
+            this.outputChannel.appendLine(`🔍 Executing query: ${query}`);
+            if (values.length > 0) {
+                this.outputChannel.appendLine(`🔍 With values: ${JSON.stringify(values)}`);
             }
 
             const client = await this.pool.connect();
@@ -475,9 +482,10 @@ export class PostgresManager {
                 const datapoint = result.rows.length > 0 ? result.rows[0] : null;
                 
                 if (datapoint) {
-                    this.outputChannel.appendLine(`✅ Found last datapoint: ${datapoint.timestamp}`);
+                    this.outputChannel.appendLine(`✅ Found last datapoint: timestamp=${datapoint.timestamp}, created_at=${datapoint.created_at}`);
+                    this.outputChannel.appendLine(`📝 Prompt preview: "${datapoint.prompt?.substring(0, 100)}..."`);
                 } else {
-                    this.outputChannel.appendLine(`ℹ️ No previous data found`);
+                    this.outputChannel.appendLine(`ℹ️ No previous data found for user: ${userId || 'any user'}`);
                 }
                 
                 return datapoint;
@@ -486,6 +494,46 @@ export class PostgresManager {
             }
         } catch (error: any) {
             this.outputChannel.appendLine(`Error in getLastDatapoint: ${error.message}`);
+            throw error;
+        }
+    }
+
+    /**
+     * Get the latest few timestamps for debugging purposes
+     */
+    public async getLatestTimestamps(limit: number = 5): Promise<any[]> {
+        if (!this.pool || !this.config) {
+            throw new Error('PostgreSQL client not initialized');
+        }
+        
+        try {
+            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
+            const userId = config.get<string>('userId', '');
+            
+            let query: string;
+            let values: any[] = [];
+            
+            if (!userId) {
+                query = `SELECT timestamp, prompt, created_at FROM ${this.config.tableName} ORDER BY timestamp DESC LIMIT $1`;
+                values = [limit];
+            } else {
+                query = `SELECT timestamp, prompt, created_at FROM ${this.config.tableName} WHERE user_id = $1 ORDER BY timestamp DESC LIMIT $2`;
+                values = [userId, limit];
+            }
+
+            const client = await this.pool.connect();
+            try {
+                const result = await client.query(query, values);
+                this.outputChannel.appendLine(`📊 Latest ${result.rows.length} timestamps from database:`);
+                result.rows.forEach((row, index) => {
+                    this.outputChannel.appendLine(`   ${index + 1}. ${row.timestamp} - "${row.prompt?.substring(0, 50)}..."`);
+                });
+                return result.rows;
+            } finally {
+                client.release();
+            }
+        } catch (error: any) {
+            this.outputChannel.appendLine(`Error getting latest timestamps: ${error.message}`);
             throw error;
         }
     }

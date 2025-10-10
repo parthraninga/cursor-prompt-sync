@@ -285,18 +285,36 @@ export class AutoScheduler {
      * Get the optimized SQL query with dynamic timestamp injection and robust exclusion filters
      */
     private getOptimizedQuery(targetTimestamp: string): string {
+        // Convert timestamp to milliseconds for proper comparison
+        const timestampDate = new Date(targetTimestamp);
+        const targetMs = timestampDate.getTime();
+        
+        this.outputChannel.appendLine(`🔍 Target timestamp: ${targetTimestamp}`);
+        this.outputChannel.appendLine(`🔍 Target milliseconds: ${targetMs}`);
+        
         return `WITH timestamp_variable AS (
-    -- Declare the timestamp variable for easy editing
-    SELECT '${targetTimestamp}' AS target_timestamp
+    -- Use actual milliseconds value for accurate comparison
+    SELECT ${targetMs} AS target_ms,
+           '${targetTimestamp}' AS target_timestamp
 ),
--- Convert timestamp to milliseconds for comparison
-timestamp_milliseconds AS (
-    SELECT 
-        target_timestamp,
-        strftime('%s', target_timestamp) * 1000 AS target_ms
-    FROM timestamp_variable
+-- First check what clientRpcSendTime values exist (for debugging)
+debug_times AS (
+    SELECT
+        json_extract(value, '$.timingInfo.clientRpcSendTime') AS client_time,
+        datetime(json_extract(value, '$.timingInfo.clientRpcSendTime')/1000, 'unixepoch') AS readable_time,
+        CASE 
+            WHEN CAST(json_extract(value, '$.timingInfo.clientRpcSendTime') AS INTEGER) > ${targetMs} THEN 'AFTER'
+            WHEN CAST(json_extract(value, '$.timingInfo.clientRpcSendTime') AS INTEGER) = ${targetMs} THEN 'EXACT'
+            ELSE 'BEFORE'
+        END AS comparison_result
+    FROM cursorDiskKV
+    WHERE key LIKE 'bubbleId:%'
+      AND json_extract(value, '$.type') = 2
+      AND json_extract(value, '$.timingInfo.clientRpcSendTime') IS NOT NULL
+    ORDER BY client_time DESC
+    LIMIT 10
 ),
--- First, get all bubble IDs after the specified timestamp (EXCLUDING exact match)
+-- Filter bubbles that are AFTER the last stored timestamp (strict exclusion)
 timestamp_filtered_bubbles AS (
     SELECT
         json_extract(value, '$.bubbleId') AS bubble_id,
@@ -306,16 +324,13 @@ timestamp_filtered_bubbles AS (
             json_extract(value, '$.timingInfo.clientRpcSendTime')/1000,
             'unixepoch'
         ) AS readable_time
-    FROM cursorDiskKV, timestamp_milliseconds
+    FROM cursorDiskKV, timestamp_variable
     WHERE key LIKE 'bubbleId:%'
       AND json_extract(value, '$.type') = 2
       AND json_extract(value, '$.timingInfo') IS NOT NULL
       AND json_extract(value, '$.timingInfo.clientRpcSendTime') IS NOT NULL
-      AND json_extract(value, '$.timingInfo.clientRpcSendTime') > timestamp_milliseconds.target_ms
-      AND json_extract(value, '$.timingInfo.clientRpcSendTime') != timestamp_milliseconds.target_ms
-      -- Additional time-based exclusions
-      AND datetime(json_extract(value, '$.timingInfo.clientRpcSendTime')/1000, 'unixepoch') != timestamp_milliseconds.target_timestamp
-      AND datetime(json_extract(value, '$.timingInfo.clientRpcSendTime')/1000, 'unixepoch') != REPLACE(timestamp_milliseconds.target_timestamp, 'T', ' ')
+      -- Use > (strictly greater than) to exclude exact timestamp and all before it
+      AND CAST(json_extract(value, '$.timingInfo.clientRpcSendTime') AS INTEGER) > target_ms
 ),
 -- Get all bubbles with their sequence positions
 bubble_sequence AS (
@@ -346,7 +361,7 @@ SELECT
         FROM cursorDiskKV bubble_data
         WHERE bubble_data.key LIKE 'bubbleId:' || target_bs.composer_id || ':' || prev_bs.bubble_id
     ) AS "prompt"
-FROM timestamp_filtered_bubbles tfb, timestamp_milliseconds
+FROM timestamp_filtered_bubbles tfb
 JOIN bubble_sequence target_bs
   ON tfb.bubble_id = target_bs.bubble_id
 JOIN target_info ti
@@ -355,13 +370,6 @@ JOIN target_info ti
 LEFT JOIN bubble_sequence prev_bs
   ON prev_bs.composer_id = target_bs.composer_id
  AND prev_bs.sequence_index = (target_bs.sequence_index - 1)
--- Multi-layer exclusion filters using dynamic timestamp
-WHERE tfb.client_rpc_send_time > timestamp_milliseconds.target_ms
-  AND tfb.client_rpc_send_time != timestamp_milliseconds.target_ms
-  AND tfb.readable_time != timestamp_milliseconds.target_timestamp
-  AND tfb.readable_time != REPLACE(timestamp_milliseconds.target_timestamp, 'T', ' ')
-  AND tfb.readable_time NOT LIKE timestamp_milliseconds.target_timestamp || '%'
-  AND tfb.readable_time NOT LIKE REPLACE(timestamp_milliseconds.target_timestamp, 'T', ' ') || '%'
 ORDER BY tfb.client_rpc_send_time DESC;`;
     }
 
@@ -517,6 +525,10 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
                     this.outputChannel.appendLine(`   3. Enter your PostgreSQL connection details`);
                     this.outputChannel.appendLine(`🔄 Using fallback timestamp: ${timestampToUse}`);
                 } else {
+                    // Get debug info first
+                    this.outputChannel.appendLine(`🔍 Getting latest timestamps from PostgreSQL for debugging...`);
+                    await this.postgresManager.getLatestTimestamps(10);
+                    
                     const lastDatapoint = await this.postgresManager.getLastDatapoint();
                     if (lastDatapoint && lastDatapoint.timestamp) {
                         lastStoredTimestamp = lastDatapoint.timestamp;
@@ -554,6 +566,10 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
                         }
                         this.outputChannel.appendLine(`✅ Last stored timestamp from PostgreSQL: ${lastStoredTimestamp}`);
                         this.outputChannel.appendLine(`✅ Final timestamp for SQL query: ${timestampToUse}`);
+                        
+                        // Convert to milliseconds and log for debugging
+                        const timestampMs = new Date(timestampToUse).getTime();
+                        this.outputChannel.appendLine(`✅ Converted to milliseconds: ${timestampMs}`);
                         this.outputChannel.appendLine(`📊 Last stored prompt preview: "${lastDatapoint.prompt?.substring(0, 100)}..."`);
                         
                         // Reset retry count on successful fetch
