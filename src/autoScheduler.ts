@@ -285,17 +285,42 @@ export class AutoScheduler {
      * Get the optimized SQL query with dynamic timestamp injection and robust exclusion filters
      */
     private getOptimizedQuery(targetTimestamp: string): string {
-        // Convert timestamp to milliseconds for proper comparison
-        const timestampDate = new Date(targetTimestamp);
-        const targetMs = timestampDate.getTime();
+        // Check if targetTimestamp is already in milliseconds or a timestamp
+        let targetMs: number;
+        let targetTimestampStr: string;
         
-        this.outputChannel.appendLine(`🔍 Target timestamp: ${targetTimestamp}`);
+        if (/^\d+$/.test(targetTimestamp)) {
+            // It's already milliseconds
+            targetMs = parseInt(targetTimestamp);
+            targetTimestampStr = new Date(targetMs).toISOString().replace('.000Z', '').replace('Z', '');
+            this.outputChannel.appendLine(`🔍 Target is milliseconds: ${targetMs}`);
+        } else {
+            // It's a timestamp, convert to milliseconds
+            const timestampDate = new Date(targetTimestamp);
+            targetMs = timestampDate.getTime();
+            targetTimestampStr = targetTimestamp;
+            this.outputChannel.appendLine(`🔍 Target timestamp: ${targetTimestamp}`);
+        }
+        
         this.outputChannel.appendLine(`🔍 Target milliseconds: ${targetMs}`);
+        
+        // Add debugging to check if target timestamp is in the future
+        const now = new Date();
+        const nowMs = now.getTime();
+        this.outputChannel.appendLine(`🔍 Current time: ${now.toISOString()} (${nowMs})`);
+        
+        if (targetMs > nowMs) {
+            this.outputChannel.appendLine(`⚠️  WARNING: Target timestamp is in the future! This will exclude all current records.`);
+        } else {
+            const diffMs = nowMs - targetMs;
+            const diffHours = diffMs / (1000 * 60 * 60);
+            this.outputChannel.appendLine(`✅ Target timestamp is ${diffHours.toFixed(1)} hours ago`);
+        }
         
         return `WITH timestamp_variable AS (
     -- Use actual milliseconds value for accurate comparison
     SELECT ${targetMs} AS target_ms,
-           '${targetTimestamp}' AS target_timestamp
+           '${targetTimestampStr}' AS target_timestamp
 ),
 -- First check what clientRpcSendTime values exist (for debugging)
 debug_times AS (
@@ -331,6 +356,8 @@ timestamp_filtered_bubbles AS (
       AND json_extract(value, '$.timingInfo.clientRpcSendTime') IS NOT NULL
       -- Use > (strictly greater than) to exclude exact timestamp and all before it
       AND CAST(json_extract(value, '$.timingInfo.clientRpcSendTime') AS INTEGER) > target_ms
+      -- Additional safety: exclude records with exact readable timestamp match
+      AND datetime(json_extract(value, '$.timingInfo.clientRpcSendTime')/1000, 'unixepoch') != target_timestamp
 ),
 -- Get all bubbles with their sequence positions
 bubble_sequence AS (
@@ -533,35 +560,36 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
                     if (lastDatapoint && lastDatapoint.timestamp) {
                         lastStoredTimestamp = lastDatapoint.timestamp;
                         
-                        // Use the stored timestamp, handling both clean and ISO formats
+                        // IMPORTANT: We need to find the ACTUAL milliseconds from SQLite for this timestamp
+                        // Instead of converting the PostgreSQL timestamp, let's get the real milliseconds from SQLite
                         if (lastStoredTimestamp) {
-                            // Strip any timezone information first
-                            const cleanedTimestamp = lastStoredTimestamp
-                                .replace(/\+\d{2}:\d{2}$/, '')  // Remove +00:00, +05:30, etc.
-                                .replace(/Z$/, '')              // Remove Z
-                                .replace(/\.\d{3}Z?$/, '')      // Remove .000Z or .123
-                                .replace(/\.\d{3}\+\d{2}:\d{2}$/, ''); // Remove .000+00:00
-                            
-                            // Check if timestamp is in clean format (YYYY-MM-DD HH:MM:SS)
-                            if (cleanedTimestamp.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)) {
-                                // Convert to T format for SQL query compatibility (YYYY-MM-DDTHH:MM:SS)
-                                timestampToUse = cleanedTimestamp.replace(' ', 'T');
-                                this.outputChannel.appendLine(`🔄 Using clean format timestamp directly for query`);
-                            } else if (cleanedTimestamp.includes('T')) {
-                                // Handle ISO format - use the cleaned timestamp directly
-                                timestampToUse = cleanedTimestamp; // Already cleaned of timezone info
-                                this.outputChannel.appendLine(`🔄 Cleaned ISO timestamp: "${lastStoredTimestamp}" → "${timestampToUse}"`);
-                            } else {
-                                // Handle other formats by parsing and formatting consistently  
-                                const date = new Date(lastStoredTimestamp);
-                                const year = date.getFullYear();
-                                const month = String(date.getMonth() + 1).padStart(2, '0');
-                                const day = String(date.getDate()).padStart(2, '0');
-                                const hours = String(date.getHours()).padStart(2, '0');
-                                const minutes = String(date.getMinutes()).padStart(2, '0');
-                                const seconds = String(date.getSeconds()).padStart(2, '0');
-                                timestampToUse = `${year}-${month}-${day}T${hours}:${minutes}:${seconds}`;
-                                this.outputChannel.appendLine(`🔄 Converted unknown format to local time`);
+                            try {
+                                const cleanedStoredTimestamp = lastStoredTimestamp.replace('T', ' ');
+                                const findActualMsQuery = `
+                                    SELECT json_extract(value, '$.timingInfo.clientRpcSendTime') AS actual_ms
+                                    FROM cursorDiskKV 
+                                    WHERE key LIKE 'bubbleId:%' 
+                                      AND json_extract(value, '$.type') = 2 
+                                      AND datetime(json_extract(value, '$.timingInfo.clientRpcSendTime')/1000, 'unixepoch') = '${cleanedStoredTimestamp}'
+                                    ORDER BY json_extract(value, '$.timingInfo.clientRpcSendTime') DESC
+                                    LIMIT 1
+                                `;
+                                
+                                const actualMsResult = await this.databaseManager.executeQuery(findActualMsQuery);
+                                if (actualMsResult && actualMsResult.length > 0) {
+                                    const actualMs = actualMsResult[0].actual_ms;
+                                    // Use the actual milliseconds directly, don't convert to timestamp and back
+                                    const actualTimestamp = new Date(parseInt(actualMs)).toISOString().replace('.000Z', '').replace('Z', '');
+                                    timestampToUse = actualMs; // Use actual milliseconds directly for SQL query
+                                    this.outputChannel.appendLine(`🎯 Found ACTUAL milliseconds: ${actualMs} -> will use ${actualMs} directly in SQL`);
+                                } else {
+                                    // Fallback to the stored timestamp if we can't find the exact match
+                                    timestampToUse = lastStoredTimestamp.replace(' ', 'T');
+                                    this.outputChannel.appendLine(`⚠️ Could not find exact milliseconds, using stored timestamp: ${timestampToUse}`);
+                                }
+                            } catch (findError) {
+                                this.outputChannel.appendLine(`⚠️ Error finding actual milliseconds: ${findError}`);
+                                timestampToUse = lastStoredTimestamp.replace(' ', 'T');
                             }
                         }
                         this.outputChannel.appendLine(`✅ Last stored timestamp from PostgreSQL: ${lastStoredTimestamp}`);
@@ -611,7 +639,31 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
             const sqlContent = this.getOptimizedQuery(timestampToUse);
             this.outputChannel.appendLine(`🔧 Using optimized SQL query with timestamp: ${timestampToUse}`);
             
-
+            // DEBUG: First check what timestamps are actually in the database
+            try {
+                const debugQuery = `
+                    SELECT 
+                        datetime(json_extract(value, '$.timingInfo.clientRpcSendTime')/1000, 'unixepoch') AS readable_time,
+                        json_extract(value, '$.timingInfo.clientRpcSendTime') AS client_ms
+                    FROM cursorDiskKV 
+                    WHERE key LIKE 'bubbleId:%' 
+                      AND json_extract(value, '$.type') = 2 
+                      AND json_extract(value, '$.timingInfo.clientRpcSendTime') IS NOT NULL
+                    ORDER BY client_ms DESC 
+                    LIMIT 5
+                `;
+                
+                const debugResults = await this.databaseManager.executeQuery(debugQuery);
+                this.outputChannel.appendLine(`🔍 DEBUG - Latest 5 timestamps in database:`);
+                debugResults.forEach((result, index) => {
+                    const targetMs = new Date(timestampToUse).getTime();
+                    const resultMs = parseInt(result.client_ms);
+                    const comparison = resultMs > targetMs ? 'NEWER' : resultMs === targetMs ? 'SAME' : 'OLDER';
+                    this.outputChannel.appendLine(`   ${index + 1}. ${result.readable_time} (${result.client_ms}) - ${comparison} than target`);
+                });
+            } catch (debugError) {
+                this.outputChannel.appendLine(`⚠️ Debug query failed: ${debugError}`);
+            }
 
             // Execute the SQL query
             const results = await this.databaseManager.executeQuery(sqlContent);
@@ -619,7 +671,34 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
             if (results && results.length > 0) {
                 this.outputChannel.appendLine(`✅ Query executed successfully - ${results.length} records returned`);
                 
-                // Skip local JSON export - only store to PostgreSQL
+                // Filter out any results that match the last stored timestamp
+                const filteredResults = results.filter(result => {
+                    // Normalize both timestamps for comparison
+                    const resultTimestamp = result.timestamp;
+                    const lastTimestamp = timestampToUse;
+                    
+                    // Convert both to the same format for comparison
+                    const resultDate = new Date(resultTimestamp).getTime();
+                    const lastDate = new Date(lastTimestamp).getTime();
+                    
+                    const isMatch = resultDate === lastDate;
+                    if (isMatch) {
+                        this.outputChannel.appendLine(`🔄 Filtering out already-stored timestamp: ${resultTimestamp}`);
+                    }
+                    
+                    return !isMatch; // Keep only records that DON'T match the last stored timestamp
+                });
+                
+                this.outputChannel.appendLine(`🔄 Filtered out ${results.length - filteredResults.length} duplicate timestamps - ${filteredResults.length} new records to process`);
+                
+                if (filteredResults.length === 0) {
+                    this.outputChannel.appendLine(`ℹ️ No new records to process after filtering`);
+                    this.lastExecution = new Date();
+                    this.executionCount++;
+                    this.updateStatusBar();
+                    this.saveState();
+                    return;
+                }
                 
                 // Parse and store in PostgreSQL (simple prompts only)
                 try {
@@ -631,19 +710,19 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
                         this.outputChannel.appendLine(`💡 Configure PostgreSQL to enable automatic storage:`);
                         this.outputChannel.appendLine(`   Command: "Cursor SQL: Configure PostgreSQL"`);
                     } else {
-                        // Create results data in the format expected by storeSimplePrompts
+                        // Create results data in the format expected by storeSimplePrompts using filtered results
                         const resultsData = {
-                            results: results,
+                            results: filteredResults,
                             metadata: {
                                 query_executed: sqlContent.substring(0, 100) + '...',
                                 execution_time_ms: 0, // We don't track execution time in auto-scheduler
-                                total_results: results.length,
+                                total_results: filteredResults.length,
                                 auto_scheduler: true,
                                 execution_timestamp: new Date().toISOString()
                             }
                         };
 
-                        this.outputChannel.appendLine(`📝 Attempting to store ${results.length} query results to PostgreSQL...`);
+                        this.outputChannel.appendLine(`📝 Attempting to store ${filteredResults.length} query results to PostgreSQL...`);
                         
                         // Use the same storeSimplePrompts method that parses and stores individual records
                         const stored = await this.postgresManager.storeSimplePrompts(resultsData);
@@ -653,7 +732,7 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
                             
                             // Show summary - look at the actual result structure
                             this.outputChannel.appendLine(`📊 Sample of processed results:`);
-                            const sampleResults = results.slice(0, 3);
+                            const sampleResults = filteredResults.slice(0, 3);
                             sampleResults.forEach((result, index) => {
                                 const timestamp = result.timestamp || 'No timestamp';
                                 const prompt = result.prompt || 'No prompt';
@@ -663,9 +742,9 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
                             this.outputChannel.appendLine(`ℹ️ No timestamp-prompt pairs found in results to store`);
                             
                             // Debug: Show result structure
-                            if (results.length > 0) {
-                                this.outputChannel.appendLine(`� Debug - First result structure: ${JSON.stringify(Object.keys(results[0]))}`);
-                                this.outputChannel.appendLine(`🔍 Debug - First result sample: ${JSON.stringify(results[0]).substring(0, 200)}...`);
+                            if (filteredResults.length > 0) {
+                                this.outputChannel.appendLine(`🔍 Debug - First result structure: ${JSON.stringify(Object.keys(filteredResults[0]))}`);
+                                this.outputChannel.appendLine(`🔍 Debug - First result sample: ${JSON.stringify(filteredResults[0]).substring(0, 200)}...`);
                             }
                         }
                     }
