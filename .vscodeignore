@@ -1,0 +1,15 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+.yarnrc
+vsc-extension-quickstart.md
+**/tsconfig.json
+**/.eslintrc.json
+**/*.map
+**/*.ts
+TESTING_GUIDE.md
+build-macos.sh
+build-macos-fixed.sh
+AUTO_SCHEDULER_GUIDE.md
+create_table_manual.sql

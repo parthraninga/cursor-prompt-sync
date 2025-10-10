@@ -2,7 +2,7 @@
   "name": "cursor-prompt-sync",
   "displayName": "Cursor Prompt Sync",
   "description": "AI Prompt Analytics & PostgreSQL Integration with automatic setup and persistent connections for seamless Cursor prompt collection",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "YorkIE",
   "author": "York.IE",
   "repository": {
@@ -14,10 +14,35 @@
     "vscode": "^1.74.0"
   },
   "categories": [
-    "Other"
+    "Other",
+    "Data Science",
+    "Machine Learning",
+    "Visualization"
+  ],
+  "keywords": [
+    "cursor",
+    "prompt",
+    "sync",
+    "postgresql",
+    "analytics",
+    "ai",
+    "database",
+    "scheduler"
   ],
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onCommand:cursor-sql-runner.setupPostgres",
+    "onCommand:cursor-sql-runner.configureAutoScheduler",
+    "onCommand:cursor-sql-runner.configureAutoSchedulerPostgres",
+    "onCommand:cursor-sql-runner.startAutoScheduler",
+    "onCommand:cursor-sql-runner.stopAutoScheduler",
+    "onCommand:cursor-sql-runner.toggleAutoScheduler",
+    "onCommand:cursor-sql-runner.showAutoSchedulerStatus",
+    "onCommand:cursor-sql-runner.getLastDatapoint",
+    "onCommand:cursor-sql-runner.configureUserId",
+    "onCommand:cursor-sql-runner.configureDatabasePath",
+    "onCommand:cursor-sql-runner.switchPostgresDatabase",
+    "onCommand:cursor-sql-runner.showDatabaseInfo"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -214,6 +239,11 @@
           "type": "boolean",
           "default": false,
           "description": "Whether the setup notification has been shown"
+        },
+        "cursorSqlRunner.hasShownAutoSetupNotice": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether the auto-setup notification has been shown"
         }
       }
     }
@@ -221,7 +251,9 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package",
+    "test": "npm run compile"
   },
   "devDependencies": {
     "@types/vscode": "^1.74.0",
@@ -231,6 +263,6 @@
   },
   "dependencies": {
     "pg": "^8.11.3",
-    "sqlite3": "^5.1.6"
+    "sql.js": "^1.8.0"
   }
 }
