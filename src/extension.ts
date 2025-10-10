@@ -188,6 +188,7 @@ export function activate(context: vscode.ExtensionContext) {
             
             // Check if PostgreSQL configuration is complete
             let isPostgresComplete = isPostgresConfigurationComplete();
+            let isFirstTimeSetup = false; // Track if this is genuine first-time setup
             
             if (!isPostgresComplete) {
                 console.log('🔧 PostgreSQL not configured, running auto-setup...');
@@ -196,6 +197,7 @@ export function activate(context: vscode.ExtensionContext) {
                 const autoSetupSuccess = await autoSetupPostgreSQL();
                 if (autoSetupSuccess) {
                     isPostgresComplete = true;
+                    isFirstTimeSetup = true; // This is genuine first-time setup
                     console.log('✅ PostgreSQL auto-setup completed');
                 } else {
                     console.log('⚠️ PostgreSQL auto-setup failed, will prompt user if needed');
@@ -212,33 +214,38 @@ export function activate(context: vscode.ExtensionContext) {
                     
                     // Check if auto-scheduler should be restarted (was running before reload)
                     const shouldRestart = autoScheduler.shouldAutoRestart();
+                    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
+                    const hasShownAutoSetupNotice = config.get<boolean>('hasShownAutoSetupNotice', false);
                     
                     if (shouldRestart) {
                         // Restart the scheduler automatically (was running before reload)
                         await autoScheduler.start(true);
                         autoScheduler.clearAutoRestartFlag();
                         console.log('✅ Auto-Scheduler restarted automatically (was running before reload)');
+                        // No popup for restart - user already saw initial setup notification
                     } else {
                         // Start for the first time
                         await autoScheduler.start(true);
                         console.log('✅ Auto-Scheduler started automatically (first time setup)');
-                    }
-                    
-                    // Show success notification only on first setup
-                    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-                    const hasShownAutoSetupNotice = config.get<boolean>('hasShownAutoSetupNotice', false);
-                    
-                    if (!hasShownAutoSetupNotice) {
-                        vscode.window.showInformationMessage(
-                            '🚀 Cursor Prompt Sync is ready! PostgreSQL connected and auto-scheduler started.',
-                            'View Status'
-                        ).then(choice => {
-                            if (choice === 'View Status') {
-                                autoScheduler.showStatus();
-                            }
-                        });
                         
-                        await config.update('hasShownAutoSetupNotice', true, vscode.ConfigurationTarget.Global);
+                        // Show success notification ONLY on genuine first-time setup AND if not shown before
+                        if (isFirstTimeSetup && !hasShownAutoSetupNotice) {
+                            vscode.window.showInformationMessage(
+                                '🚀 Cursor Prompt Sync is ready! PostgreSQL connected and auto-scheduler started.',
+                                'View Status'
+                            ).then(choice => {
+                                if (choice === 'View Status') {
+                                    autoScheduler.showStatus();
+                                }
+                            });
+                            
+                            await config.update('hasShownAutoSetupNotice', true, vscode.ConfigurationTarget.Global);
+                            console.log('✅ First-time setup notification shown to user');
+                        } else if (!isFirstTimeSetup) {
+                            console.log('ℹ️ Extension started with existing configuration - no notification needed');
+                        } else {
+                            console.log('ℹ️ First-time setup notification already shown previously');
+                        }
                     }
                     
                 } catch (error: any) {

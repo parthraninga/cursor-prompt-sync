@@ -45,7 +45,29 @@ export class AutoScheduler {
      */
     private async getCachedEmailFromDatabase(): Promise<string | null> {
         try {
-            this.outputChannel.appendLine(`🔍 Executing query: SELECT value FROM ItemTable WHERE key = 'cursorAuth/cachedEmail'`);
+            this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] Starting email detection process...`);
+            
+            // Check if database path is configured
+            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
+            const databasePath = config.get<string>('databasePath', '');
+            
+            this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] Database path: ${databasePath}`);
+            
+            if (!databasePath) {
+                this.outputChannel.appendLine(`❌ [EMAIL DETECTION] No database path configured`);
+                return null;
+            }
+            
+            // Check if database file exists
+            const fs = require('fs');
+            if (!fs.existsSync(databasePath)) {
+                this.outputChannel.appendLine(`❌ [EMAIL DETECTION] Database file does not exist: ${databasePath}`);
+                return null;
+            }
+            
+            this.outputChannel.appendLine(`✅ [EMAIL DETECTION] Database file exists, size: ${fs.statSync(databasePath).size} bytes`);
+            
+            this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] Executing query: SELECT value FROM ItemTable WHERE key = 'cursorAuth/cachedEmail'`);
             
             // Query the ItemTable for cursorAuth/cachedEmail
             const emailQuery = `
@@ -55,21 +77,30 @@ export class AutoScheduler {
                 LIMIT 1;
             `;
             
+            this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] About to execute query via DatabaseManager...`);
             const results = await this.databaseManager.executeQuery(emailQuery);
             
-            if (results && results.length > 0 && results[0].value) {
-                const email = results[0].value;
-                this.outputChannel.appendLine(`✅ SUCCESS: Found cached email in ItemTable: ${email}`);
-                console.log(`✅ SUCCESS: Found cached email in ItemTable: ${email}`);
-                return email;
+            this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] Query executed, results type: ${typeof results}, length: ${Array.isArray(results) ? results.length : 'N/A'}`);
+            this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] Raw results: ${JSON.stringify(results, null, 2)}`);
+            
+            if (results && results.length > 0) {
+                this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] First result: ${JSON.stringify(results[0], null, 2)}`);
+                
+                if (results[0].value) {
+                    const email = results[0].value;
+                    this.outputChannel.appendLine(`✅ [EMAIL DETECTION] SUCCESS: Found cached email in ItemTable: ${email}`);
+                    return email;
+                } else {
+                    this.outputChannel.appendLine(`❌ [EMAIL DETECTION] Result exists but 'value' field is empty/null`);
+                }
             } else {
-                this.outputChannel.appendLine(`❌ EMPTY RESULT: No cached email found in ItemTable (results: ${JSON.stringify(results)})`);
-                console.log(`❌ EMPTY RESULT: No cached email found in ItemTable`);
-                return null;
+                this.outputChannel.appendLine(`❌ [EMAIL DETECTION] EMPTY RESULT: No cached email found in ItemTable (results: ${JSON.stringify(results)})`);
             }
+            
+            return null;
         } catch (error) {
-            this.outputChannel.appendLine(`❌ QUERY ERROR: Failed to query cached email from database: ${error}`);
-            console.log(`❌ QUERY ERROR: Failed to query cached email from database: ${error}`);
+            this.outputChannel.appendLine(`❌ [EMAIL DETECTION] QUERY ERROR: Failed to query cached email from database: ${error}`);
+            this.outputChannel.appendLine(`❌ [EMAIL DETECTION] Error details: ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`);
             return null;
         }
     }
@@ -91,7 +122,6 @@ export class AutoScheduler {
                 userId = cachedEmail;
                 await config.update('userId', userId, vscode.ConfigurationTarget.Global);
                 this.outputChannel.appendLine(`💾 ✅ FIRST-TIME SETUP: Auto-saved cached email as PostgreSQL userId: ${userId}`);
-                console.log(`💾 ✅ FIRST-TIME SETUP: Auto-saved cached email as PostgreSQL userId: ${userId}`);
                 
                 // Show success notification to user
                 vscode.window.showInformationMessage(`🎉 Welcome! Your Cursor email (${userId}) has been detected and set as your User ID.`);
@@ -100,7 +130,6 @@ export class AutoScheduler {
                 const defaultUserId = `user-${Date.now()}`;
                 await config.update('userId', defaultUserId, vscode.ConfigurationTarget.Global);
                 this.outputChannel.appendLine(`💾 ⚠️  FIRST-TIME SETUP: No cached email found, auto-generated userId: ${defaultUserId}`);
-                console.log(`💾 ⚠️  FIRST-TIME SETUP: No cached email found, auto-generated userId: ${defaultUserId}`);
                 
                 // Show helpful notification to user
                 vscode.window.showWarningMessage(`⚠️ Could not detect your Cursor email. Generated temporary ID: ${defaultUserId}. You can change this in settings.`, 'Configure User ID').then(selection => {
@@ -127,7 +156,6 @@ export class AutoScheduler {
             const macPath = path.join(homedir, 'Library', 'Application Support', 'Cursor', 'User', 'globalStorage', 'state.vscdb');
             if (fs.existsSync(macPath)) {
                 this.outputChannel.appendLine(`✅ Found Cursor database at macOS path: ${macPath}`);
-                console.log(`✅ Found Cursor database at macOS path: ${macPath}`);
                 return macPath;
             }
         }
@@ -137,7 +165,6 @@ export class AutoScheduler {
             const winPath = path.join(homedir, 'AppData', 'Roaming', 'Cursor', 'User', 'globalStorage', 'state.vscdb');
             if (fs.existsSync(winPath)) {
                 this.outputChannel.appendLine(`✅ Found Cursor database at Windows path: ${winPath}`);
-                console.log(`✅ Found Cursor database at Windows path: ${winPath}`);
                 return winPath;
             }
         }
@@ -147,13 +174,11 @@ export class AutoScheduler {
             const linuxPath = path.join(homedir, '.config', 'Cursor', 'User', 'globalStorage', 'state.vscdb');
             if (fs.existsSync(linuxPath)) {
                 this.outputChannel.appendLine(`✅ Found Cursor database at Linux path: ${linuxPath}`);
-                console.log(`✅ Found Cursor database at Linux path: ${linuxPath}`);
                 return linuxPath;
             }
         }
         
         this.outputChannel.appendLine(`❌ Cursor database not found in any standard locations`);
-        console.log(`❌ Cursor database not found in any standard locations`);
         return null;
     }
 
