@@ -44,22 +44,6 @@ export function activate(context: vscode.ExtensionContext) {
 
         vscode.commands.registerCommand('cursor-sql-runner.showAutoSchedulerStatus', () => {
             autoScheduler.showStatus();
-        }),
-
-        // Helper command for debugging
-        vscode.commands.registerCommand('cursor-sql-runner.getLastDatapoint', async () => {
-            try {
-                const lastDatapoint = await postgresManager.getLastDatapoint();
-                if (lastDatapoint) {
-                    vscode.window.showInformationMessage(
-                        `Last datapoint: ${lastDatapoint.timestamp} - "${lastDatapoint.prompt?.substring(0, 100)}..."`
-                    );
-                } else {
-                    vscode.window.showInformationMessage('No datapoints found in Supabase');
-                }
-            } catch (error: any) {
-                vscode.window.showErrorMessage(`Error getting last datapoint: ${error.message}`);
-            }
         })
     ];
 
