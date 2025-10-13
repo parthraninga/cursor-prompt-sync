@@ -29,7 +29,7 @@ export class PostgresManager {
     private outputChannel: vscode.OutputChannel;
 
     constructor() {
-        this.outputChannel = vscode.window.createOutputChannel('Cursor Analytics - PostgreSQL');
+        this.outputChannel = vscode.window.createOutputChannel('Cursor SQL Runner - PostgreSQL');
     }
 
     /**
@@ -54,14 +54,6 @@ export class PostgresManager {
             const password = 'postgres';
             const tableName = 'cursor_query_results';
 
-            // Debug logging to see what values are being used
-            this.outputChannel.appendLine(`🔍 PostgreSQL Configuration Debug:`);
-            this.outputChannel.appendLine(`   Host: ${host}`);
-            this.outputChannel.appendLine(`   Port: ${port}`);
-            this.outputChannel.appendLine(`   Database: ${database}`);
-            this.outputChannel.appendLine(`   User: ${user}`);
-            this.outputChannel.appendLine(`   Table: ${tableName}`);
-
             if (!password) {
                 vscode.window.showErrorMessage('Please configure PostgreSQL password in settings');
                 return false;
@@ -85,7 +77,6 @@ export class PostgresManager {
             const client = await this.pool.connect();
             try {
                 await client.query('SELECT 1');
-                this.outputChannel.appendLine('PostgreSQL connection established successfully');
                 
                 // Check if table exists, create if not
                 await this.ensureTableExists();
@@ -126,7 +117,6 @@ export class PostgresManager {
             const client = await this.pool.connect();
             try {
                 await client.query(createTableSQL);
-                this.outputChannel.appendLine(`Table ${this.config.tableName} ensured successfully`);
             } finally {
                 client.release();
             }
@@ -168,7 +158,6 @@ export class PostgresManager {
                 const result = await client.query(insertQuery, values);
                 const insertedId = result.rows[0]?.id;
 
-                this.outputChannel.appendLine(`Query result stored successfully with ID: ${insertedId}`);
                 return insertedId.toString();
             } finally {
                 client.release();
@@ -381,7 +370,6 @@ export class PostgresManager {
             try {
                 const result = await client.query(deleteQuery, [cutoffDate.toISOString()]);
                 const deletedCount = result.rowCount || 0;
-                this.outputChannel.appendLine(`Cleaned up ${deletedCount} old records (older than ${daysToKeep} days)`);
                 return deletedCount;
             } finally {
                 client.release();
@@ -421,7 +409,6 @@ export class PostgresManager {
         if (this.pool) {
             await this.pool.end();
             this.pool = null;
-            this.outputChannel.appendLine('PostgreSQL connection pool closed');
         }
     }
 
@@ -461,19 +448,12 @@ export class PostgresManager {
             let values: any[] = [];
             
             if (!userId) {
-                this.outputChannel.appendLine(`⚠️ No user_id configured - fetching last datapoint without user filter`);
                 // Order by timestamp DESC to get the most recent prompt timestamp
                 query = `SELECT * FROM ${this.config.tableName} ORDER BY timestamp DESC LIMIT 1`;
             } else {
-                this.outputChannel.appendLine(`🔍 Fetching last datapoint for user: ${userId}`);
                 // Order by timestamp DESC to get the most recent prompt timestamp for this user
                 query = `SELECT * FROM ${this.config.tableName} WHERE user_id = $1 ORDER BY timestamp DESC LIMIT 1`;
                 values = [userId];
-            }
-
-            this.outputChannel.appendLine(`🔍 Executing query: ${query}`);
-            if (values.length > 0) {
-                this.outputChannel.appendLine(`🔍 With values: ${JSON.stringify(values)}`);
             }
 
             const client = await this.pool.connect();
@@ -481,59 +461,12 @@ export class PostgresManager {
                 const result = await client.query(query, values);
                 const datapoint = result.rows.length > 0 ? result.rows[0] : null;
                 
-                if (datapoint) {
-                    this.outputChannel.appendLine(`✅ Found last datapoint: timestamp=${datapoint.timestamp}, created_at=${datapoint.created_at}`);
-                    this.outputChannel.appendLine(`📝 Prompt preview: "${datapoint.prompt?.substring(0, 100)}..."`);
-                } else {
-                    this.outputChannel.appendLine(`ℹ️ No previous data found for user: ${userId || 'any user'}`);
-                }
-                
                 return datapoint;
             } finally {
                 client.release();
             }
         } catch (error: any) {
             this.outputChannel.appendLine(`Error in getLastDatapoint: ${error.message}`);
-            throw error;
-        }
-    }
-
-    /**
-     * Get the latest few timestamps for debugging purposes
-     */
-    public async getLatestTimestamps(limit: number = 5): Promise<any[]> {
-        if (!this.pool || !this.config) {
-            throw new Error('PostgreSQL client not initialized');
-        }
-        
-        try {
-            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-            const userId = config.get<string>('userId', '');
-            
-            let query: string;
-            let values: any[] = [];
-            
-            if (!userId) {
-                query = `SELECT timestamp, prompt, created_at FROM ${this.config.tableName} ORDER BY timestamp DESC LIMIT $1`;
-                values = [limit];
-            } else {
-                query = `SELECT timestamp, prompt, created_at FROM ${this.config.tableName} WHERE user_id = $1 ORDER BY timestamp DESC LIMIT $2`;
-                values = [userId, limit];
-            }
-
-            const client = await this.pool.connect();
-            try {
-                const result = await client.query(query, values);
-                this.outputChannel.appendLine(`📊 Latest ${result.rows.length} timestamps from database:`);
-                result.rows.forEach((row, index) => {
-                    this.outputChannel.appendLine(`   ${index + 1}. ${row.timestamp} - "${row.prompt?.substring(0, 50)}..."`);
-                });
-                return result.rows;
-            } finally {
-                client.release();
-            }
-        } catch (error: any) {
-            this.outputChannel.appendLine(`Error getting latest timestamps: ${error.message}`);
             throw error;
         }
     }
@@ -549,13 +482,6 @@ export class PostgresManager {
         try {
             this.outputChannel.appendLine('\n=== PARSING JSON AND STORING TO TIMESTAMP-PROMPT COLUMNS ===');
             this.outputChannel.appendLine(`Using table: ${this.config.tableName}`);
-            this.outputChannel.appendLine(`Input data structure: ${JSON.stringify({
-                hasMetadata: !!jsonData.metadata,
-                hasResults: !!jsonData.results,
-                resultsType: typeof jsonData.results,
-                resultsLength: Array.isArray(jsonData.results) ? jsonData.results.length : 'not array'
-            }, null, 2)}`);
-
             // Parse the JSON structure to extract results array
             let resultsArray: any[] = [];
             
@@ -567,14 +493,7 @@ export class PostgresManager {
                 throw new Error('Invalid JSON structure. Expected array of objects or object with results array.');
             }
 
-            this.outputChannel.appendLine(`Processing ${resultsArray.length} results from database query`);
-
-            // Show sample data structure for debugging
-            if (resultsArray.length > 0) {
-                this.outputChannel.appendLine(`Sample result structure: ${JSON.stringify(resultsArray[0], null, 2)}`);
-            }
-
-            // Parse each result and extract timestamp and prompt for individual row insertion
+            // Process each result item
             const recordsToInsert: Array<{timestamp: string, prompt: string}> = [];
             
             for (let i = 0; i < resultsArray.length; i++) {
@@ -590,7 +509,6 @@ export class PostgresManager {
                 } else if (item.time) {
                     timestamp = item.time;
                 } else {
-                    this.outputChannel.appendLine(`⚠️ No timestamp found in item ${i}, skipping`);
                     continue;
                 }
 
@@ -604,7 +522,6 @@ export class PostgresManager {
                 } else if (item.content) {
                     prompt = item.content;
                 } else {
-                    this.outputChannel.appendLine(`⚠️ No prompt found in item ${i}, skipping`);
                     continue;
                 }
 
@@ -612,7 +529,6 @@ export class PostgresManager {
             }
 
             if (recordsToInsert.length === 0) {
-                this.outputChannel.appendLine('❌ No valid records found to insert');
                 return 0;
             }
 
@@ -642,7 +558,6 @@ export class PostgresManager {
                     insertedCount++;
                 }
 
-                this.outputChannel.appendLine(`✅ Successfully inserted ${insertedCount} prompt records`);
                 return insertedCount;
             } finally {
                 client.release();
@@ -653,10 +568,4 @@ export class PostgresManager {
         }
     }
 
-    /**
-     * Public log method for extension-wide logging
-     */
-    public log(message: string): void {
-        this.outputChannel.appendLine(message);
-    }
 }
