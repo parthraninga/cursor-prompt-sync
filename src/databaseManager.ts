@@ -13,21 +13,17 @@ export class DatabaseManager {
     private outputChannel: vscode.OutputChannel;
 
     constructor() {
-        this.outputChannel = vscode.window.createOutputChannel('Cursor Prompt Sync - Database Manager');
+        this.outputChannel = vscode.window.createOutputChannel('Cursor SQL Runner - Database');
         this.initializationPromise = this.initializeSQL();
     }
 
     private async initializeSQL() {
         try {
-            this.outputChannel.appendLine('🔄 [DB MANAGER] Starting sql.js initialization...');
             // Dynamically import sql.js for cross-platform SQLite support
             const initSqlJs = require('sql.js');
-            this.outputChannel.appendLine('🔄 [DB MANAGER] sql.js module loaded, initializing...');
             this.sql = await initSqlJs();
             this.sqlInitialized = true;
-            this.outputChannel.appendLine('✅ [DB MANAGER] sql.js initialized successfully');
         } catch (error) {
-            this.outputChannel.appendLine(`❌ [DB MANAGER] sql.js not available, using fallback implementation: ${error}`);
             this.sql = null;
             this.sqlInitialized = false;
         }
@@ -35,14 +31,10 @@ export class DatabaseManager {
 
     async executeQuery(query: string, cancellationToken?: vscode.CancellationToken): Promise<QueryResult[]> {
         // Wait for SQL initialization to complete
-        this.outputChannel.appendLine('🔄 [DB MANAGER] Waiting for SQL initialization...');
         await this.initializationPromise;
-        this.outputChannel.appendLine(`🔄 [DB MANAGER] SQL initialization complete. sqlInitialized: ${this.sqlInitialized}, sql: ${this.sql ? 'available' : 'null'}`);
         
         const config = vscode.workspace.getConfiguration('cursorSqlRunner');
         const databasePath = config.get<string>('databasePath', '');
-        
-        this.outputChannel.appendLine(`🔄 [DB MANAGER] Database path: ${databasePath}`);
         
         if (!databasePath) {
             throw new Error('Database path not configured. Please set the Cursor database path first.');
@@ -52,44 +44,33 @@ export class DatabaseManager {
             throw new Error(`Database file not found: ${databasePath}`);
         }
 
-        this.outputChannel.appendLine(`🔄 [DB MANAGER] Database file exists, checking query...`);
-
         // Validate query (only allow SELECT for safety)
         const trimmedQuery = query.trim().toLowerCase();
         if (!trimmedQuery.startsWith('select') && !trimmedQuery.startsWith('with')) {
             throw new Error('Only SELECT and WITH queries are allowed for safety');
         }
 
-        this.outputChannel.appendLine(`🔄 [DB MANAGER] Query validation passed, executing...`);
-
         try {
             if (this.sqlInitialized && this.sql) {
-                this.outputChannel.appendLine('🔧 [DB MANAGER] Using sql.js to execute SQLite query');
                 // Use sql.js to read SQLite database
                 return await this.executeSQLiteQuery(databasePath, query);
             } else {
-                this.outputChannel.appendLine('⚠️ [DB MANAGER] sql.js not available, using fallback implementation');
                 // Fallback for specific queries
                 if (trimmedQuery.includes('itemtable') && trimmedQuery.includes('cursorauth/cachedemail')) {
-                    this.outputChannel.appendLine('📧 [DB MANAGER] Using email fallback for ItemTable query');
                     return this.getCachedEmailFallback();
                 }
                 
                 // For conversation queries, try to parse the database manually
                 if (trimmedQuery.includes('conversations') || trimmedQuery.includes('message')) {
-                    this.outputChannel.appendLine('💬 [DB MANAGER] Using manual parsing for conversation query');
                     return await this.parseConversationData(databasePath, query);
                 }
                 
-                this.outputChannel.appendLine('📭 [DB MANAGER] No specific fallback available, returning empty array');
                 return [];
             }
         } catch (error: any) {
-            this.outputChannel.appendLine(`❌ [DB MANAGER] DatabaseManager error: ${error.message}`);
-            this.outputChannel.appendLine(`❌ [DB MANAGER] Error stack: ${error.stack}`);
+            this.outputChannel.appendLine(`Database error: ${error.message}`);
             // Fallback to mock data if database reading fails
             if (trimmedQuery.includes('itemtable') && trimmedQuery.includes('cursorauth/cachedemail')) {
-                this.outputChannel.appendLine('📧 [DB MANAGER] Using email fallback due to database error');
                 return this.getCachedEmailFallback();
             }
             return [];
@@ -98,51 +79,27 @@ export class DatabaseManager {
 
     private async executeSQLiteQuery(databasePath: string, query: string): Promise<QueryResult[]> {
         try {
-            this.outputChannel.appendLine(`🔄 [SQLITE] Starting SQLite query execution...`);
-            this.outputChannel.appendLine(`🔄 [SQLITE] Database path: ${databasePath}`);
-            this.outputChannel.appendLine(`🔄 [SQLITE] Query: ${query.trim()}`);
-            
             // Read the SQLite database file
-            this.outputChannel.appendLine(`🔄 [SQLITE] Reading database file...`);
             const dbBuffer = fs.readFileSync(databasePath);
-            this.outputChannel.appendLine(`🔄 [SQLITE] Database file read successfully, size: ${dbBuffer.length} bytes`);
             
-            this.outputChannel.appendLine(`🔄 [SQLITE] Creating sql.js Database instance...`);
             const db = new this.sql.Database(dbBuffer);
-            this.outputChannel.appendLine(`🔄 [SQLITE] Database instance created successfully`);
             
             // Execute the query
-            this.outputChannel.appendLine(`🔄 [SQLITE] Preparing SQL statement...`);
             const stmt = db.prepare(query);
-            this.outputChannel.appendLine(`🔄 [SQLITE] Statement prepared successfully`);
             
             const results: QueryResult[] = [];
-            let rowCount = 0;
             
-            this.outputChannel.appendLine(`🔄 [SQLITE] Executing query and collecting results...`);
             while (stmt.step()) {
                 const row = stmt.getAsObject();
                 results.push(row);
-                rowCount++;
-                this.outputChannel.appendLine(`🔄 [SQLITE] Row ${rowCount}: ${JSON.stringify(row)}`);
-                
-                // Limit logging to first 5 rows to avoid spam
-                if (rowCount <= 5) {
-                    this.outputChannel.appendLine(`🔄 [SQLITE] Row ${rowCount} details: ${JSON.stringify(row, null, 2)}`);
-                }
             }
-            
-            this.outputChannel.appendLine(`✅ [SQLITE] Query execution completed. Total rows: ${rowCount}`);
             
             stmt.free();
             db.close();
-            this.outputChannel.appendLine(`🔄 [SQLITE] Database connection closed`);
             
             return results;
         } catch (error: any) {
-            this.outputChannel.appendLine(`❌ [SQLITE] SQLite query execution failed: ${error.message}`);
-            this.outputChannel.appendLine(`❌ [SQLITE] Error stack: ${error.stack}`);
-            this.outputChannel.appendLine(`❌ [SQLITE] Error details: ${JSON.stringify(error, Object.getOwnPropertyNames(error))}`);
+            this.outputChannel.appendLine(`SQLite query execution failed: ${error.message}`);
             throw new Error(`SQLite query execution failed: ${error.message}`);
         }
     }
@@ -186,14 +143,10 @@ export class DatabaseManager {
         const config = vscode.workspace.getConfiguration('cursorSqlRunner');
         const userId = config.get<string>('userId', '');
         
-        this.outputChannel.appendLine(`📧 [FALLBACK] getCachedEmailFallback: Current userId in config: "${userId}"`);
-        
         if (userId && userId.includes('@') && !userId.includes('user@example.com') && !userId.startsWith('user-')) {
-            this.outputChannel.appendLine(`✅ [FALLBACK] Using configured userId as email: ${userId}`);
             return [{ key: 'cursorAuth/cachedEmail', value: userId }];
         }
         
-        this.outputChannel.appendLine(`⚠️ [FALLBACK] No valid email found in userId config, using default fallback`);
         return [{ key: 'cursorAuth/cachedEmail', value: 'user@example.com' }];
     }
 
