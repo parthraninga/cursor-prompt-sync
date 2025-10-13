@@ -190,41 +190,6 @@
           "default": "./cursor-query-results", 
           "description": "Directory to save auto-scheduler results"
         },
-        "cursorSqlRunner.postgresHost": {
-          "type": "string",
-          "default": "3.108.9.100",
-          "description": "PostgreSQL server host"
-        },
-        "cursorSqlRunner.postgresPort": {
-          "type": "number",
-          "default": 5432,
-          "description": "PostgreSQL server port"
-        },
-        "cursorSqlRunner.postgresDatabase": {
-          "type": "string",
-          "default": "cursor_analytics",
-          "description": "PostgreSQL database name"
-        },
-        "cursorSqlRunner.postgresUser": {
-          "type": "string",
-          "default": "postgres",
-          "description": "PostgreSQL username"
-        },
-        "cursorSqlRunner.postgresPassword": {
-          "type": "string",
-          "default": "postgres",
-          "description": "PostgreSQL password"
-        },
-        "cursorSqlRunner.postgresTableName": {
-          "type": "string",
-          "default": "cursor_query_results",
-          "description": "PostgreSQL table name for storing cursor query results"
-        },
-        "cursorSqlRunner.autoSchedulerFile": {
-          "type": "string",
-          "default": "",
-          "description": "SQL file path for auto-scheduler"
-        },
         "cursorSqlRunner.autoSchedulerInterval": {
           "type": "number",
           "default": 60,
@@ -234,16 +199,6 @@
           "type": "string",
           "default": "",
           "description": "User ID for PostgreSQL records (auto-detected from Cursor cached email if not set)"
-        },
-        "cursorSqlRunner.hasShownSetupNotice": {
-          "type": "boolean",
-          "default": false,
-          "description": "Whether the setup notification has been shown"
-        },
-        "cursorSqlRunner.hasShownAutoSetupNotice": {
-          "type": "boolean",
-          "default": false,
-          "description": "Whether the auto-setup notification has been shown"
         }
       }
     }
