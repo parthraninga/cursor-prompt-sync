@@ -6,6 +6,9 @@ import { DatabaseManager } from './databaseManager';
 import { PostgresManager } from './postgresManager';
 import { AutoScheduler } from './autoScheduler';
 import { ResultsViewer } from './resultsViewer';
+import { AutoStartupManager } from './autoStartupManager';
+import { initializeSecretStorage, getDatabasePathSecret, setDatabasePathSecret, getUserIdSecret, setUserIdSecret } from './secretStorage';
+import { POSTGRES_DEFAULTS } from './postgresDefaults';
 
 /**
  * Auto-detect Cursor database path based on OS
@@ -58,108 +61,33 @@ function detectCursorDatabasePath(): string | null {
     return null;
 }
 
-/**
- * Check if PostgreSQL configuration is complete
- */
-function isPostgresConfigurationComplete(): boolean {
-    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-    
-    const postgresHost = config.get<string>('postgresHost', '');
-    const postgresDatabase = config.get<string>('postgresDatabase', '');
-    const postgresUser = config.get<string>('postgresUser', '');
-    const postgresPassword = config.get<string>('postgresPassword', '');
-    const databasePath = config.get<string>('databasePath', '');
-    
-    return !!(postgresHost && postgresDatabase && postgresUser && postgresPassword && databasePath);
-}
-
-/**
- * Auto-setup PostgreSQL with default configuration
- */
-async function autoSetupPostgreSQL(): Promise<boolean> {
-    try {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        
-        // Force EC2 configuration values
-        const host = '3.108.9.100';
-        const port = 5432;
-        const database = 'cursor_analytics';
-        const user = 'postgres';
-        const tableName = 'cursor_query_results';
-        
-        // Check if password is already configured
-        let password = config.get<string>('postgresPassword', '');
-        
-        if (!password) {
-            // Prompt for password on first setup only
-            const passwordInput = await vscode.window.showInputBox({
-                prompt: 'Enter PostgreSQL password for one-time setup (will be remembered)',
-                password: true,
-                ignoreFocusOut: true,
-                placeHolder: 'PostgreSQL password for 3.108.9.100',
-                validateInput: (value) => {
-                    if (!value) {
-                        return 'Password is required for PostgreSQL connection';
-                    }
-                    return null;
-                }
-            });
-
-            if (!passwordInput) {
-                console.log('❌ Auto-setup cancelled - password required');
-                return false;
-            }
-            password = passwordInput;
-        }
-        
-        // Update VS Code settings GLOBALLY
-        await config.update('postgresHost', host, vscode.ConfigurationTarget.Global);
-        await config.update('postgresPort', port, vscode.ConfigurationTarget.Global);
-        await config.update('postgresDatabase', database, vscode.ConfigurationTarget.Global);
-        await config.update('postgresUser', user, vscode.ConfigurationTarget.Global);
-        await config.update('postgresPassword', password, vscode.ConfigurationTarget.Global);
-        await config.update('postgresTableName', tableName, vscode.ConfigurationTarget.Global);
-        
-        console.log(`✅ Auto-configured PostgreSQL: ${host}:${port}/${database}`);
-        return true;
-    } catch (error: any) {
-        console.log(`❌ Auto-setup PostgreSQL failed: ${error.message}`);
-        return false;
-    }
+async function isPostgresConfigurationComplete(): Promise<boolean> {
+    const databasePath = await getDatabasePathSecret();
+    const userId = await getUserIdSecret();
+    return !!(databasePath && userId);
 }
 
 /**
  * Auto-configure missing settings
  */
 async function autoConfigureMissingSettings(): Promise<boolean> {
-    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
     let configured = false;
     
-    // Auto-detect database path if not configured
-    let databasePath = config.get<string>('databasePath', '');
+    const databasePath = await getDatabasePathSecret();
     if (!databasePath) {
         const detectedPath = detectCursorDatabasePath();
         if (detectedPath) {
-            await config.update('databasePath', detectedPath, vscode.ConfigurationTarget.Global);
+            await setDatabasePathSecret(detectedPath);
             console.log(`✅ Auto-detected database path: ${detectedPath}`);
             configured = true;
         }
     }
     
-    // Set default user ID if not configured
-    let userId = config.get<string>('userId', '');
+    const userId = await getUserIdSecret();
     if (!userId) {
         const defaultUserId = `user-${Date.now()}`;
-        await config.update('userId', defaultUserId, vscode.ConfigurationTarget.Global);
+        await setUserIdSecret(defaultUserId);
         console.log(`✅ Auto-generated user ID: ${defaultUserId}`);
-        configured = true;
-    }
-    
-    // Set default interval if not configured
-    const interval = config.get<number>('autoSchedulerInterval', 0);
-    if (interval === 0) {
-        await config.update('autoSchedulerInterval', 60, vscode.ConfigurationTarget.Global);
-        console.log(`✅ Set default interval: 60 minutes`);
         configured = true;
     }
     
@@ -168,143 +96,114 @@ async function autoConfigureMissingSettings(): Promise<boolean> {
 
 export function activate(context: vscode.ExtensionContext) {
     console.log('Cursor Prompt Sync extension is now active!');
+    initializeSecretStorage(context);
 
     // Initialize managers
     const databaseManager = new DatabaseManager();
     const postgresManager = new PostgresManager();
     const resultsViewer = new ResultsViewer(context);
-    const autoScheduler = new AutoScheduler(databaseManager, resultsViewer, postgresManager, context);
+    const autoStartupManager = new AutoStartupManager(context);
+    const autoScheduler = new AutoScheduler(databaseManager, resultsViewer, postgresManager, context, autoStartupManager);
 
-    // Smart configuration and auto-startup
+    // Store globally for deactivate function access
+    (global as any).__cursorPromptSyncContext = context;
+    (global as any).__cursorPromptSyncAutoStartupManager = autoStartupManager;
+
+    // Smart configuration on activation with auto-startup
     setTimeout(async () => {
         try {
-            console.log('� Cursor Prompt Sync: Automatic initialization starting...');
-            
-            // Auto-configure missing settings
+            console.log('⚙️ Cursor Prompt Sync: initialization checks starting...');
+
+            // Auto-configure database path and user ID
             const autoConfigured = await autoConfigureMissingSettings();
             if (autoConfigured) {
                 console.log('✅ Auto-configured missing settings');
             }
+
+            // Handle PostgreSQL configuration with persistence
+            const hasConfiguredPostgres = context.globalState.get<boolean>('cursorPromptSync.postgresConfigured') || false;
+            let postgresReady = false;
             
-            // Check if PostgreSQL configuration is complete
-            let isPostgresComplete = isPostgresConfigurationComplete();
-            let isFirstTimeSetup = false; // Track if this is genuine first-time setup
-            
-            if (!isPostgresComplete) {
-                console.log('🔧 PostgreSQL not configured, running auto-setup...');
+            if (!hasConfiguredPostgres) {
+                // First time setup - prompt for PostgreSQL configuration
+                console.log('🔧 First-time PostgreSQL setup required...');
                 
-                // Try automatic setup
-                const autoSetupSuccess = await autoSetupPostgreSQL();
-                if (autoSetupSuccess) {
-                    isPostgresComplete = true;
-                    isFirstTimeSetup = true; // This is genuine first-time setup
-                    console.log('✅ PostgreSQL auto-setup completed');
+                const configured = await autoScheduler.configurePostgres(false); // Show password prompt
+                if (configured) {
+                    await context.globalState.update('cursorPromptSync.postgresConfigured', true);
+                    postgresReady = true;
+                    console.log('✅ PostgreSQL configured and saved for future use');
+                    
+                    // Show welcome message
+                    vscode.window.showInformationMessage(
+                        '🎉 Cursor Prompt Sync is now configured! Auto-scheduler will start automatically.',
+                        'Show Status'
+                    ).then(selection => {
+                        if (selection === 'Show Status') {
+                            vscode.commands.executeCommand('cursor-sql-runner.showAutoSchedulerStatus');
+                        }
+                    });
                 } else {
-                    console.log('⚠️ PostgreSQL auto-setup failed, will prompt user if needed');
-                }
-            }
-            
-            if (isPostgresComplete) {
-                console.log('✅ PostgreSQL configuration complete, initializing connection...');
-                
-                // Configure PostgreSQL silently
-                try {
-                    await autoScheduler.configurePostgres(true);
-                    console.log('✅ PostgreSQL connection established successfully');
-                    
-                    // Check if auto-scheduler should be restarted (was running before reload)
-                    const shouldRestart = autoScheduler.shouldAutoRestart();
-                    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-                    const hasShownAutoSetupNotice = config.get<boolean>('hasShownAutoSetupNotice', false);
-                    
-                    if (shouldRestart) {
-                        // Restart the scheduler automatically (was running before reload)
-                        await autoScheduler.start(true);
-                        autoScheduler.clearAutoRestartFlag();
-                        console.log('✅ Auto-Scheduler restarted automatically (was running before reload)');
-                        // No popup for restart - user already saw initial setup notification
-                    } else {
-                        // Start for the first time
-                        await autoScheduler.start(true);
-                        console.log('✅ Auto-Scheduler started automatically (first time setup)');
-                        
-                        // Show success notification ONLY on genuine first-time setup AND if not shown before
-                        if (isFirstTimeSetup && !hasShownAutoSetupNotice) {
-                            vscode.window.showInformationMessage(
-                                '🚀 Cursor Prompt Sync is ready! PostgreSQL connected and auto-scheduler started.',
-                                'View Status'
-                            ).then(choice => {
-                                if (choice === 'View Status') {
-                                    autoScheduler.showStatus();
-                                }
-                            });
-                            
-                            await config.update('hasShownAutoSetupNotice', true, vscode.ConfigurationTarget.Global);
-                            console.log('✅ First-time setup notification shown to user');
-                        } else if (!isFirstTimeSetup) {
-                            console.log('ℹ️ Extension started with existing configuration - no notification needed');
-                        } else {
-                            console.log('ℹ️ First-time setup notification already shown previously');
+                    console.log('⚠️ PostgreSQL configuration failed or was cancelled');
+                    vscode.window.showWarningMessage(
+                        'PostgreSQL configuration is required for auto-scheduler. Extension will retry on next startup.',
+                        'Try Again'
+                    ).then(selection => {
+                        if (selection === 'Try Again') {
+                            vscode.commands.executeCommand('cursor-sql-runner.configureAutoSchedulerPostgres');
                         }
-                    }
-                    
-                } catch (error: any) {
-                    console.log('⚠️ PostgreSQL connection failed:', error.message);
-                    
-                    // Only show setup prompt if auto-setup didn't work
-                    const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-                    const hasShownSetupNotice = config.get<boolean>('hasShownSetupNotice', false);
-                    
-                    if (!hasShownSetupNotice) {
-                        const choice = await vscode.window.showWarningMessage(
-                            'Cursor Prompt Sync: PostgreSQL connection failed. Setup required.',
-                            'Setup PostgreSQL', 'Skip'
-                        );
-                        
-                        if (choice === 'Setup PostgreSQL') {
-                            await vscode.commands.executeCommand('cursor-sql-runner.setupPostgres');
-                        }
-                        
-                        await config.update('hasShownSetupNotice', true, vscode.ConfigurationTarget.Global);
-                    }
+                    });
+                    // Don't return - still start scheduler with limited functionality
                 }
-                
             } else {
-                console.log('⚠️ PostgreSQL configuration incomplete. Setup required for full functionality.');
-                
-                // Show one-time notification about setup
-                const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-                const hasShownSetupNotice = config.get<boolean>('hasShownSetupNotice', false);
-                
-                if (!hasShownSetupNotice) {
-                    const choice = await vscode.window.showInformationMessage(
-                        'Cursor Prompt Sync needs PostgreSQL configuration for data storage. Configure now?',
-                        'Setup PostgreSQL', 'Skip'
-                    );
-                    
-                    if (choice === 'Setup PostgreSQL') {
-                        await vscode.commands.executeCommand('cursor-sql-runner.setupPostgres');
+                // PostgreSQL was previously configured, try to initialize it silently
+                console.log('🔄 Initializing previously configured PostgreSQL...');
+                try {
+                    const initialized = await postgresManager.initialize();
+                    if (initialized) {
+                        // Verify the connection still works
+                        const connectionWorks = await postgresManager.testConnection();
+                        if (connectionWorks) {
+                            postgresReady = true;
+                            console.log('✅ PostgreSQL connection restored successfully');
+                        } else {
+                            console.log('⚠️ PostgreSQL connection test failed');
+                            // Mark as needing reconfiguration
+                            await context.globalState.update('cursorPromptSync.postgresConfigured', false);
+                        }
+                    } else {
+                        console.log('⚠️ PostgreSQL initialization failed - may need reconfiguration');
+                        // Mark as needing reconfiguration  
+                        await context.globalState.update('cursorPromptSync.postgresConfigured', false);
                     }
-                    
-                    // Mark that we've shown the notice
-                    await config.update('hasShownSetupNotice', true, vscode.ConfigurationTarget.Global);
+                } catch (error: any) {
+                    console.log('⚠️ PostgreSQL restoration failed:', error.message);
+                    // Mark as needing reconfiguration
+                    await context.globalState.update('cursorPromptSync.postgresConfigured', false);
                 }
             }
             
+            if (postgresReady) {
+                console.log('✅ PostgreSQL is ready for auto-scheduler operations');
+            } else {
+                console.log('⚠️ PostgreSQL not ready - auto-scheduler will run with limited functionality');
+            }
+
+            // Auto-startup logic - ALWAYS start when VS Code/Cursor opens
+            console.log('🚀 Starting scheduler automatically (always ON when VS Code opens)...');
+            await autoScheduler.start(true); // Silent start
+            console.log(postgresReady 
+                ? '✅ Scheduler started successfully with PostgreSQL' 
+                : '✅ Scheduler started (PostgreSQL will be retried)');
         } catch (error: any) {
-            console.log('⚠️ Auto-startup error:', error.message);
+            console.log('⚠️ Activation initialization error:', error.message);
         }
-    }, 1000); // Wait 1 second after activation
+    }, 1000);
 
     // Register only auto-scheduler related commands (with silent error handling for duplicates)
     const commands: vscode.Disposable[] = [];
     
     try {
-        // PostgreSQL setup (required for auto-scheduler)
-        commands.push(vscode.commands.registerCommand('cursor-sql-runner.setupPostgres', async () => {
-            await setupPostgresCommand(postgresManager);
-        }));
-
         // Auto-scheduler configuration commands
         commands.push(vscode.commands.registerCommand('cursor-sql-runner.configureAutoScheduler', async () => {
             await autoScheduler.setInterval();
@@ -331,22 +230,53 @@ export function activate(context: vscode.ExtensionContext) {
             autoScheduler.showStatus();
         }));
 
-        // Configure User ID command
-        commands.push(vscode.commands.registerCommand('cursor-sql-runner.configureUserId', async () => {
-            await configureUserIdCommand();
-        }));
-
-        // Database configuration commands
-        commands.push(vscode.commands.registerCommand('cursor-sql-runner.configureDatabasePath', async () => {
-            await configureDatabasePathCommand();
-        }));
-
-        commands.push(vscode.commands.registerCommand('cursor-sql-runner.switchPostgresDatabase', async () => {
-            await switchPostgresDatabaseCommand(postgresManager);
-        }));
-
         commands.push(vscode.commands.registerCommand('cursor-sql-runner.showDatabaseInfo', async () => {
             await showDatabaseInfoCommand(postgresManager);
+        }));
+
+        // Get last datapoint for current user from PostgreSQL
+        commands.push(vscode.commands.registerCommand('cursor-sql-runner.getLastDatapoint', async () => {
+            try {
+                const initialized = await postgresManager.initialize();
+                if (!initialized) {
+                    vscode.window.showErrorMessage('PostgreSQL is not configured or reachable.');
+                    return;
+                }
+
+                const userId = await getUserIdSecret();
+                const datapoint = await postgresManager.getLastDatapoint();
+
+                if (!datapoint) {
+                    vscode.window.showInformationMessage(
+                        userId
+                            ? `No datapoints found in PostgreSQL for user "${userId}".`
+                            : 'No datapoints found in PostgreSQL.'
+                    );
+                    return;
+                }
+
+                const infoLines = [
+                    '🕒 Last Datapoint from PostgreSQL',
+                    userId ? `👤 User: ${userId}` : '👤 User: (not set)',
+                    `⏰ Timestamp: ${datapoint.timestamp}`,
+                    `💬 Prompt: ${datapoint.prompt ?? '(no prompt stored)'}`,
+                ];
+
+                const msg = infoLines.join('\n');
+                const output = vscode.window.createOutputChannel('Cursor Prompt Sync - Last Datapoint');
+                output.clear();
+                output.appendLine(msg);
+                output.show();
+
+                vscode.window.showInformationMessage('Last PostgreSQL datapoint displayed in output channel', 'Show Details')
+                    .then(selection => {
+                        if (selection === 'Show Details') {
+                            output.show();
+                        }
+                    });
+            } catch (error: any) {
+                vscode.window.showErrorMessage(`Failed to fetch last datapoint: ${error.message ?? String(error)}`);
+            }
         }));
     } catch (error: any) {
         // Silently ignore duplicate registration errors - no notifications shown
@@ -357,292 +287,34 @@ export function activate(context: vscode.ExtensionContext) {
     // Add all command disposables to context
     commands.forEach(command => context.subscriptions.push(command));
 
-    // Initialize auto-scheduler status bar
+    // Initialize auto-scheduler status bar and auto-startup manager
     context.subscriptions.push(autoScheduler);
+    context.subscriptions.push(autoStartupManager);
 }
 
 export function deactivate() {
     console.log('Cursor Prompt Sync extension is now deactivated');
-}
-
-// Helper function for configuring User ID
-async function configureUserIdCommand(): Promise<void> {
-    try {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        const currentUserId = config.get<string>('userId') || '';
-
-        const userId = await vscode.window.showInputBox({
-            prompt: 'Enter your User ID for Supabase records',
-            placeHolder: 'e.g., john.doe, user123, etc.',
-            value: currentUserId,
-            validateInput: (value) => {
-                if (!value || value.trim().length === 0) {
-                    return 'User ID cannot be empty';
-                }
-                if (value.length > 50) {
-                    return 'User ID must be 50 characters or less';
-                }
-                return null;
-            }
-        });
-
-        if (userId !== undefined) {
-            await config.update('userId', userId.trim(), vscode.ConfigurationTarget.Global);
-            vscode.window.showInformationMessage(`✅ User ID configured: ${userId.trim()}`);
-        }
-    } catch (error: any) {
-        vscode.window.showErrorMessage(`Error configuring User ID: ${error.message}`);
-    }
-}
-
-// Helper function for PostgreSQL setup
-async function setupPostgresCommand(postgresManager: PostgresManager): Promise<void> {
-    // Automatically configures PostgreSQL with default settings (in package.json)
-    // Only asks for password if not already configured in package.json
-    // Uses: 3.108.9.100:5432, database: cursor_analytics, user: postgres, table: cursor_query_results
     
+    // Record session end for fresh startup detection
+    // Note: We need to access the autoStartupManager instance
+    // This is a simple approach - in a real scenario, you might want to make this more robust
     try {
-        // Automatically use default configuration values instead of asking user
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        
-        // Force EC2 configuration values (override any cached localhost values)
-        const host = '3.108.9.100';  // Force EC2 IP
-        const port = 5432;
-        const database = 'cursor_analytics';
-        const user = 'postgres';
-        const tableName = 'cursor_query_results';
-        
-        // Only ask for password if not already configured
-        let password = config.get<string>('postgresPassword') || '';
-        
-        if (!password) {
-            // Ask for password only if not configured
-            const passwordInput = await vscode.window.showInputBox({
-                prompt: 'Enter PostgreSQL password (this is the only required input)',
-                password: true,
-                validateInput: (value) => {
-                    if (!value) {
-                        return 'Please enter a password';
-                    }
-                    return null;
-                }
-            });
-
-            if (!passwordInput) {
-                vscode.window.showWarningMessage('PostgreSQL setup cancelled - password is required');
-                return;
-            }
-            password = passwordInput;
-        }
-
-        // Update VS Code settings GLOBALLY (works across all workspaces)
-        // Force clear any cached localhost values
-        await config.update('postgresHost', host, vscode.ConfigurationTarget.Global);
-        await config.update('postgresPort', port, vscode.ConfigurationTarget.Global);
-        await config.update('postgresDatabase', database, vscode.ConfigurationTarget.Global);
-        await config.update('postgresUser', user, vscode.ConfigurationTarget.Global);
-        await config.update('postgresPassword', password, vscode.ConfigurationTarget.Global);
-        await config.update('postgresTableName', tableName, vscode.ConfigurationTarget.Global);
-
-        console.log(`🔍 Configuration set to: ${host}:${port}/${database}`);
-
-        // Test connection
-        await postgresManager.initialize();
-        
-        vscode.window.showInformationMessage(
-            `✅ PostgreSQL connection configured automatically!\n` +
-            `🔧 Default Settings Used:\n` +
-            `   • Host: ${host}:${port}\n` +
-            `   • Database: ${database}\n` +
-            `   • Table: ${tableName}\n` +
-            `   • User: ${user}\n` +
-            `\n✨ Ready to use! You can now start the auto-scheduler.`
-        );
-
-    } catch (error: any) {
-        vscode.window.showErrorMessage(`Failed to setup PostgreSQL: ${error.message}`);
-    }
-}
-
-// Helper function for configuring local database path
-async function configureDatabasePathCommand(): Promise<void> {
-    try {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        const currentPath = config.get<string>('databasePath') || '';
-
-        const options: vscode.OpenDialogOptions = {
-            canSelectMany: false,
-            openLabel: 'Select Cursor Database File',
-            filters: {
-                'Database files': ['vscdb', 'db', 'sqlite', 'sqlite3'],
-                'All files': ['*']
-            },
-            title: 'Select Cursor Database File (usually state.vscdb)'
-        };
-
-        const fileUri = await vscode.window.showOpenDialog(options);
-        
-        if (fileUri && fileUri[0]) {
-            const selectedPath = fileUri[0].fsPath;
-            
-            // Validate that it's a SQLite database
-            try {
-                const fs = require('fs');
-                if (!fs.existsSync(selectedPath)) {
-                    throw new Error('File does not exist');
-                }
-
-                // Check file size (SQLite files are typically not empty)
-                const stats = fs.statSync(selectedPath);
-                if (stats.size === 0) {
-                    throw new Error('Database file appears to be empty');
-                }
-
-                // Update configuration GLOBALLY (works across all workspaces)
-                await config.update('databasePath', selectedPath, vscode.ConfigurationTarget.Global);
-                
-                vscode.window.showInformationMessage(
-                    `✅ Database path configured successfully!\nPath: ${selectedPath}`
-                );
-
-            } catch (validateError: any) {
-                vscode.window.showErrorMessage(`Invalid database file: ${validateError.message}`);
+        const context = (global as any).__cursorPromptSyncContext;
+        if (context) {
+            const autoStartupManager = (global as any).__cursorPromptSyncAutoStartupManager;
+            if (autoStartupManager) {
+                autoStartupManager.recordSessionEnd();
             }
         }
-    } catch (error: any) {
-        vscode.window.showErrorMessage(`Error configuring database path: ${error.message}`);
-    }
-}
-
-// Helper function for switching PostgreSQL database/table
-async function switchPostgresDatabaseCommand(postgresManager: PostgresManager): Promise<void> {
-    try {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        const currentHost = config.get<string>('postgresHost') || '3.108.9.100';
-        const currentPort = config.get<number>('postgresPort') || 5432;
-        const currentDatabase = config.get<string>('postgresDatabase') || '';
-        const currentTable = config.get<string>('postgresTableName') || 'cursor_query_results';
-
-        // Show current configuration
-        const action = await vscode.window.showQuickPick([
-            {
-                label: '🏠 Change Host',
-                description: `Current: ${currentHost}`
-            },
-            {
-                label: '🔌 Change Port',
-                description: `Current: ${currentPort}`
-            },
-            {
-                label: '🗄️ Change Database',
-                description: `Current: ${currentDatabase || 'Not configured'}`
-            },
-            {
-                label: '📋 Change Table Name',
-                description: `Current: ${currentTable}`
-            },
-            {
-                label: '🆕 Configure New Connection',
-                description: 'Complete setup for a different database'
-            }
-        ], {
-            placeHolder: 'What would you like to change?',
-            title: 'Switch PostgreSQL Database Configuration'
-        });
-
-        if (!action) return;
-
-        if (action.label.includes('Change Host')) {
-            const newHost = await vscode.window.showInputBox({
-                prompt: 'Enter new PostgreSQL host',
-                value: currentHost,
-                validateInput: (value) => {
-                    if (!value) {
-                        return 'Please enter a valid hostname';
-                    }
-                    return null;
-                }
-            });
-
-            if (newHost) {
-                await config.update('postgresHost', newHost, vscode.ConfigurationTarget.Global);
-                await postgresManager.initialize();
-                vscode.window.showInformationMessage(`✅ PostgreSQL host updated globally: ${newHost}`);
-            }
-
-        } else if (action.label.includes('Change Port')) {
-            const newPortInput = await vscode.window.showInputBox({
-                prompt: 'Enter new PostgreSQL port',
-                value: currentPort.toString(),
-                validateInput: (value) => {
-                    const port = parseInt(value);
-                    if (isNaN(port) || port <= 0 || port > 65535) {
-                        return 'Please enter a valid port number (1-65535)';
-                    }
-                    return null;
-                }
-            });
-
-            if (newPortInput) {
-                const newPort = parseInt(newPortInput);
-                await config.update('postgresPort', newPort, vscode.ConfigurationTarget.Global);
-                await postgresManager.initialize();
-                vscode.window.showInformationMessage(`✅ PostgreSQL port updated globally: ${newPort}`);
-            }
-
-        } else if (action.label.includes('Change Database')) {
-            const newDatabase = await vscode.window.showInputBox({
-                prompt: 'Enter new database name',
-                value: currentDatabase,
-                validateInput: (value) => {
-                    if (!value || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
-                        return 'Please enter a valid database name (letters, numbers, underscores only)';
-                    }
-                    return null;
-                }
-            });
-
-            if (newDatabase) {
-                await config.update('postgresDatabase', newDatabase, vscode.ConfigurationTarget.Global);
-                await postgresManager.initialize();
-                vscode.window.showInformationMessage(`✅ Database name updated globally: ${newDatabase}`);
-            }
-
-        } else if (action.label.includes('Change Table Name')) {
-            const newTable = await vscode.window.showInputBox({
-                prompt: 'Enter new table name',
-                value: currentTable,
-                validateInput: (value) => {
-                    if (!value || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(value)) {
-                        return 'Please enter a valid table name (letters, numbers, underscores only)';
-                    }
-                    return null;
-                }
-            });
-
-            if (newTable) {
-                await config.update('postgresTableName', newTable, vscode.ConfigurationTarget.Global);
-                await postgresManager.initialize();
-                vscode.window.showInformationMessage(`✅ Table name updated globally: ${newTable}`);
-            }
-
-        } else if (action.label.includes('Configure New Connection')) {
-            // Run the full setup command
-            await setupPostgresCommand(postgresManager);
-        }
-
-    } catch (error: any) {
-        vscode.window.showErrorMessage(`Error switching PostgreSQL database: ${error.message}`);
+    } catch (error) {
+        console.log('Note: Could not record session end (normal during first run)');
     }
 }
 
 // Helper function for showing current database information
 async function showDatabaseInfoCommand(postgresManager: PostgresManager): Promise<void> {
     try {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        
-        // Get local database info
-        const localDbPath = config.get<string>('databasePath') || 'Not configured';
+        const localDbPath = await getDatabasePathSecret() || 'Not configured';
         let localDbInfo = 'Not accessible';
         
         try {
@@ -659,13 +331,8 @@ async function showDatabaseInfoCommand(postgresManager: PostgresManager): Promis
             localDbInfo = 'Error accessing file';
         }
 
-        // Get PostgreSQL database info
-        const postgresHost = config.get<string>('postgresHost') || '3.108.9.100';
-        const postgresPort = config.get<number>('postgresPort') || 5432;
-        const postgresDatabase = config.get<string>('postgresDatabase') || 'Not configured';
-        const postgresTable = config.get<string>('postgresTableName') || 'cursor_query_results';
-        const postgresUser = config.get<string>('postgresUser') || 'postgres';
-        const userId = config.get<string>('userId') || 'Not configured';
+        const { host: postgresHost, port: postgresPort, database: postgresDatabase, tableName: postgresTable, user: postgresUser } = POSTGRES_DEFAULTS;
+        const userId = await getUserIdSecret() || 'Not configured';
         
         let postgresStatus = 'Not initialized';
         let recordCount = 'Unknown';

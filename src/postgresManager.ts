@@ -1,5 +1,7 @@
 import { Pool, Client, QueryResult as PgQueryResult } from 'pg';
 import * as vscode from 'vscode';
+import { POSTGRES_DEFAULTS } from './postgresDefaults';
+import { getUserIdSecret } from './secretStorage';
 
 export interface QueryResult {
     id?: string;
@@ -44,20 +46,7 @@ export class PostgresManager {
      */
     public async initialize(): Promise<boolean> {
         try {
-            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-            
-            // Force EC2 configuration (override any cached localhost values)
-            const host = '3.108.9.100';  // Force EC2 IP
-            const port = 5432;
-            const database = 'cursor_analytics';
-            const user = 'postgres';
-            const password = 'postgres';
-            const tableName = 'cursor_query_results';
-
-            if (!password) {
-                vscode.window.showErrorMessage('Please configure PostgreSQL password in settings');
-                return false;
-            }
+            const { host, port, database, user, password, tableName } = POSTGRES_DEFAULTS;
 
             this.config = { host, port, database, user, password, tableName };
             
@@ -440,9 +429,7 @@ export class PostgresManager {
         }
         
         try {
-            // Get the current user_id from VS Code configuration
-            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-            const userId = config.get<string>('userId', '');
+            const userId = await getUserIdSecret();
             
             let query: string;
             let values: any[] = [];
@@ -533,8 +520,7 @@ export class PostgresManager {
             }
 
             // Get user ID for records
-            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-            const userId = config.get<string>('userId') || 'local_user';
+            const userId = await getUserIdSecret() || 'local_user';
 
             // Insert records in batch
             const client = await this.pool.connect();

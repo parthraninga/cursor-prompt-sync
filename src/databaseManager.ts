@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as path from 'path';
+import { getDatabasePathSecret, getUserIdSecret } from './secretStorage';
 
 export interface QueryResult {
     [key: string]: any;
@@ -33,8 +33,7 @@ export class DatabaseManager {
         // Wait for SQL initialization to complete
         await this.initializationPromise;
         
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        const databasePath = config.get<string>('databasePath', '');
+        const databasePath = await getDatabasePathSecret();
         
         if (!databasePath) {
             throw new Error('Database path not configured. Please set the Cursor database path first.');
@@ -56,8 +55,8 @@ export class DatabaseManager {
                 return await this.executeSQLiteQuery(databasePath, query);
             } else {
                 // Fallback for specific queries
-                if (trimmedQuery.includes('itemtable') && trimmedQuery.includes('cursorauth/cachedemail')) {
-                    return this.getCachedEmailFallback();
+            if (trimmedQuery.includes('itemtable') && trimmedQuery.includes('cursorauth/cachedemail')) {
+                return await this.getCachedEmailFallback();
                 }
                 
                 // For conversation queries, try to parse the database manually
@@ -71,7 +70,7 @@ export class DatabaseManager {
             this.outputChannel.appendLine(`Database error: ${error.message}`);
             // Fallback to mock data if database reading fails
             if (trimmedQuery.includes('itemtable') && trimmedQuery.includes('cursorauth/cachedemail')) {
-                return this.getCachedEmailFallback();
+                return await this.getCachedEmailFallback();
             }
             return [];
         }
@@ -138,10 +137,8 @@ export class DatabaseManager {
         }
     }
 
-    private getCachedEmailFallback(): QueryResult[] {
-        // Try to get email from VS Code configuration first
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        const userId = config.get<string>('userId', '');
+    private async getCachedEmailFallback(): Promise<QueryResult[]> {
+        const userId = await getUserIdSecret();
         
         if (userId && userId.includes('@') && !userId.includes('user@example.com') && !userId.startsWith('user-')) {
             return [{ key: 'cursorAuth/cachedEmail', value: userId }];
@@ -151,8 +148,7 @@ export class DatabaseManager {
     }
 
     async testConnection(): Promise<boolean> {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        const databasePath = config.get<string>('databasePath', '');
+        const databasePath = await getDatabasePathSecret();
         
         if (!databasePath) {
             return false;
@@ -162,8 +158,7 @@ export class DatabaseManager {
     }
 
     async getDatabaseInfo(): Promise<{ tables: string[], size: number, recordCount: number }> {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        const databasePath = config.get<string>('databasePath', '');
+        const databasePath = await getDatabasePathSecret();
 
         if (!databasePath || !fs.existsSync(databasePath)) {
             throw new Error('Database not found');

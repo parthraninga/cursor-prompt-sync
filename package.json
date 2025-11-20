@@ -2,7 +2,7 @@
   "name": "cursor-prompt-sync",
   "displayName": "Cursor Prompt Sync",
   "description": "AI Prompt Analytics & PostgreSQL Integration with automatic setup and persistent connections for seamless Cursor prompt collection",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "publisher": "YorkIE",
   "author": "York.IE",
   "repository": {
@@ -48,11 +48,6 @@
   "contributes": {
     "commands": [
       {
-        "command": "cursor-sql-runner.setupPostgres",
-        "title": "Auto-Setup PostgreSQL Connection",
-        "category": "Cursor Prompt Sync"
-      },
-      {
         "command": "cursor-sql-runner.configureAutoScheduler",
         "title": "Configure Auto-Scheduler Interval",
         "category": "Cursor Prompt Sync"
@@ -88,21 +83,6 @@
         "category": "Cursor Prompt Sync"
       },
       {
-        "command": "cursor-sql-runner.configureUserId",
-        "title": "Configure User ID",
-        "category": "Cursor Prompt Sync"
-      },
-      {
-        "command": "cursor-sql-runner.configureDatabasePath",
-        "title": "Configure Local Database Path",
-        "category": "Cursor Prompt Sync"
-      },
-      {
-        "command": "cursor-sql-runner.switchPostgresDatabase",
-        "title": "Switch PostgreSQL Database/Table",
-        "category": "Cursor Prompt Sync"
-      },
-      {
         "command": "cursor-sql-runner.showDatabaseInfo",
         "title": "Show Database Configuration",
         "category": "Cursor Prompt Sync"
@@ -110,10 +90,6 @@
     ],
     "menus": {
       "commandPalette": [
-        {
-          "command": "cursor-sql-runner.setupPostgres",
-          "when": "true"
-        },
         {
           "command": "cursor-sql-runner.configureAutoScheduler",
           "when": "true"
@@ -143,18 +119,6 @@
           "when": "true"
         },
         {
-          "command": "cursor-sql-runner.configureUserId",
-          "when": "true"
-        },
-        {
-          "command": "cursor-sql-runner.configureDatabasePath",
-          "when": "true"
-        },
-        {
-          "command": "cursor-sql-runner.switchPostgresDatabase",
-          "when": "true"
-        },
-        {
           "command": "cursor-sql-runner.showDatabaseInfo",
           "when": "true"
         }
@@ -180,25 +144,10 @@
     "configuration": {
       "title": "Cursor Prompt Sync",
       "properties": {
-        "cursorSqlRunner.databasePath": {
-          "type": "string",
-          "default": "",
-          "description": "Path to Cursor database file (auto-detected if not set)"
-        },
         "cursorSqlRunner.outputDirectory": {
           "type": "string",
-          "default": "./cursor-query-results", 
+          "default": "./cursor-query-results",
           "description": "Directory to save auto-scheduler results"
-        },
-        "cursorSqlRunner.autoSchedulerInterval": {
-          "type": "number",
-          "default": 60,
-          "description": "Auto-scheduler interval in minutes"
-        },
-        "cursorSqlRunner.userId": {
-          "type": "string",
-          "default": "",
-          "description": "User ID for PostgreSQL records (auto-detected from Cursor cached email if not set)"
         }
       }
     }

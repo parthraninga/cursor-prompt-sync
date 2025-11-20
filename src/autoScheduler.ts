@@ -5,6 +5,9 @@ import * as os from 'os';
 import { DatabaseManager } from './databaseManager';
 import { ResultsViewer } from './resultsViewer';
 import { PostgresManager } from './postgresManager';
+import { AutoStartupManager } from './autoStartupManager';
+import { POSTGRES_DEFAULTS } from './postgresDefaults';
+import { getUserIdSecret, setUserIdSecret, getDatabasePathSecret, setDatabasePathSecret } from './secretStorage';
 
 export class AutoScheduler {
     private intervalId: NodeJS.Timeout | null = null;
@@ -22,7 +25,8 @@ export class AutoScheduler {
         private databaseManager: DatabaseManager,
         private resultsViewer: ResultsViewer,
         private postgresManager: PostgresManager,
-        private context: vscode.ExtensionContext
+        private context: vscode.ExtensionContext,
+        private autoStartupManager?: AutoStartupManager
     ) {
         this.outputChannel = vscode.window.createOutputChannel('Cursor Prompt Sync');
         this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -47,9 +51,7 @@ export class AutoScheduler {
         try {
             this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] Starting email detection process...`);
             
-            // Check if database path is configured
-            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-            const databasePath = config.get<string>('databasePath', '');
+            const databasePath = await getDatabasePathSecret();
             
             this.outputChannel.appendLine(`🔍 [EMAIL DETECTION] Database path: ${databasePath}`);
             
@@ -109,8 +111,7 @@ export class AutoScheduler {
      * Ensure userId exists for PostgreSQL operations using cached email from database
      */
     private async ensureSupabaseUserId(): Promise<void> {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        let userId = config.get<string>('userId', '');
+        let userId = await getUserIdSecret();
         
         // If no user ID is configured, this is first-time setup
         if (!userId) {
@@ -120,7 +121,7 @@ export class AutoScheduler {
             const cachedEmail = await this.getCachedEmailFromDatabase();
             if (cachedEmail) {
                 userId = cachedEmail;
-                await config.update('userId', userId, vscode.ConfigurationTarget.Global);
+                await setUserIdSecret(userId);
                 this.outputChannel.appendLine(`💾 ✅ FIRST-TIME SETUP: Auto-saved cached email as PostgreSQL userId: ${userId}`);
                 
                 // Show success notification to user
@@ -128,7 +129,7 @@ export class AutoScheduler {
             } else {
                 // Fallback to timestamp-based ID if email not found
                 const defaultUserId = `user-${Date.now()}`;
-                await config.update('userId', defaultUserId, vscode.ConfigurationTarget.Global);
+                await setUserIdSecret(defaultUserId);
                 this.outputChannel.appendLine(`💾 ⚠️  FIRST-TIME SETUP: No cached email found, auto-generated userId: ${defaultUserId}`);
                 
                 // Show helpful notification to user
@@ -187,24 +188,19 @@ export class AutoScheduler {
      */
     private async initializeDatabasePath(): Promise<void> {
         try {
-            const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-            const configuredPath = config.get<string>('databasePath', '');
+            const configuredPath = await getDatabasePathSecret();
             
-            // If user has configured a path and it exists, we're good
             if (configuredPath && fs.existsSync(configuredPath)) {
                 this.outputChannel.appendLine(`✅ Using configured database path: ${configuredPath}`);
                 return;
             }
             
-            // Try auto-detection
             const autoPath = await this.getAutoDatabasePath();
             if (autoPath) {
-                // Auto-save the detected path for future use
-                await config.update('databasePath', autoPath, vscode.ConfigurationTarget.Global);
+                await setDatabasePathSecret(autoPath);
                 this.outputChannel.appendLine(`💾 Auto-configured database path: ${autoPath}`);
                 vscode.window.showInformationMessage(`🎉 Cursor database auto-detected at: ${autoPath}`);
             } else {
-                // Show helpful message to user
                 const message = 'Cursor database not found. Please ensure Cursor is installed or configure the database path manually.';
                 this.outputChannel.appendLine(`⚠️  ${message}`);
                 vscode.window.showWarningMessage(message, 'Configure Manually').then(selection => {
@@ -255,8 +251,7 @@ export class AutoScheduler {
      * Public method to get the current userId (cached email or configured value)
      */
     public async getCurrentUserId(): Promise<string> {
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        let userId = config.get<string>('userId', '');
+        let userId = await getUserIdSecret();
         
         if (!userId) {
             const cachedEmail = await this.getCachedEmailFromDatabase();
@@ -399,21 +394,92 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
 
     /**
      * Configure PostgreSQL for the auto-scheduler
+     * This should only be called once during first-time setup
      */
-    async configurePostgres(silent: boolean = false): Promise<void> {
+    async configurePostgres(silent: boolean = false): Promise<boolean> {
         try {
-            await this.postgresManager.initialize();
-            if (!silent) {
-                vscode.window.showInformationMessage('PostgreSQL configured successfully for auto-scheduler');
+            // Check if already configured and working
+            if (this.postgresManager.isInitialized()) {
+                const testConnection = await this.postgresManager.testConnection();
+                if (testConnection) {
+                    this.outputChannel.appendLine(`✅ PostgreSQL already configured and working`);
+                    return true;
+                }
             }
-            this.outputChannel.appendLine(`✅ PostgreSQL configuration completed`);
-            this.outputChannel.appendLine(`🔄 Auto-scheduler will now use PostgreSQL for incremental processing`);
-        } catch (error) {
+
             if (!silent) {
-                vscode.window.showErrorMessage(`Failed to configure PostgreSQL: ${error}`);
+                // Show informative message about first-time setup
+                const proceed = await vscode.window.showInformationMessage(
+                    '🔧 First-time setup: PostgreSQL configuration is required for the auto-scheduler to work properly.',
+                    'Configure Now',
+                    'Cancel'
+                );
+
+                if (proceed !== 'Configure Now') {
+                    vscode.window.showWarningMessage('PostgreSQL configuration cancelled. Auto-scheduler will not function properly.');
+                    return false;
+                }
+
+                const passwordInput = await vscode.window.showInputBox({
+                    prompt: 'Enter the extension password to configure PostgreSQL (required once)',
+                    password: true,
+                    ignoreFocusOut: true,
+                    placeHolder: 'Extension password for one-time PostgreSQL setup',
+                    validateInput: (value) => {
+                        if (!value || value.trim().length === 0) {
+                            return 'Password is required for PostgreSQL configuration';
+                        }
+                        return null;
+                    }
+                });
+
+                if (!passwordInput) {
+                    vscode.window.showWarningMessage('PostgreSQL configuration cancelled - password is required');
+                    return false;
+                }
+
+                if (passwordInput.trim() !== 'YorkIEinterns') {
+                    vscode.window.showErrorMessage('Incorrect extension password. PostgreSQL configuration aborted.');
+                    return false;
+                }
+
+                // Show progress during initialization
+                const initializePromise = this.postgresManager.initialize();
+                vscode.window.withProgress({
+                    location: vscode.ProgressLocation.Notification,
+                    title: "Configuring PostgreSQL...",
+                    cancellable: false
+                }, async (progress) => {
+                    progress.report({ increment: 0, message: "Establishing connection..." });
+                    return initializePromise;
+                });
+
+                const initialized = await initializePromise;
+                if (!initialized) {
+                    throw new Error('Failed to establish PostgreSQL connection');
+                }
+
+                vscode.window.showInformationMessage('✅ PostgreSQL configured successfully! Configuration saved for future use.');
+            } else {
+                // Silent initialization (already configured before)
+                const initialized = await this.postgresManager.initialize();
+                if (!initialized) {
+                    this.outputChannel.appendLine(`⚠️ PostgreSQL initialization failed - may need reconfiguration`);
+                    return false;
+                }
             }
-            this.outputChannel.appendLine(`❌ PostgreSQL configuration failed: ${error}`);
-            throw error;
+
+            this.outputChannel.appendLine(`✅ PostgreSQL configuration completed and saved`);
+            this.outputChannel.appendLine(`🔄 Auto-scheduler will use PostgreSQL for data storage`);
+            this.outputChannel.appendLine(`💾 Configuration is persistent - no need to reconfigure`);
+            return true;
+        } catch (error: any) {
+            const errorMessage = error?.message ? error.message : error;
+            if (!silent) {
+                vscode.window.showErrorMessage(`Failed to configure PostgreSQL: ${errorMessage}`);
+            }
+            this.outputChannel.appendLine(`❌ PostgreSQL configuration failed: ${errorMessage}`);
+            return false;
         }
     }
 
@@ -461,9 +527,11 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
     /**
      * Stop the auto-scheduler
      */
-    async stop(): Promise<void> {
+    async stop(silent: boolean = false): Promise<void> {
         if (!this.isRunning) {
-            vscode.window.showWarningMessage('Auto-scheduler is not running');
+            if (!silent) {
+                vscode.window.showWarningMessage('Auto-scheduler is not running');
+            }
             return;
         }
 
@@ -477,7 +545,23 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
         this.saveState();
 
         this.outputChannel.appendLine(`⏹️ Auto-scheduler stopped at ${new Date().toLocaleString()}`);
-        vscode.window.showInformationMessage('Auto-scheduler stopped');
+        this.outputChannel.appendLine(`🔄 Will auto-start when VS Code/Cursor is reopened`);
+        
+        if (!silent) {
+            const message = 'Auto-scheduler stopped (will auto-start when VS Code reopens)';
+            
+            vscode.window.showInformationMessage(
+                message,
+                'Show Status',
+                'Restart Now'
+            ).then(selection => {
+                if (selection === 'Show Status') {
+                    vscode.commands.executeCommand('cursor-sql-runner.showAutoSchedulerStatus');
+                } else if (selection === 'Restart Now') {
+                    vscode.commands.executeCommand('cursor-sql-runner.startAutoScheduler');
+                }
+            });
+        }
     }
 
     /**
@@ -500,12 +584,12 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
             
             // Get last timestamp from PostgreSQL and modify SQL query
             let lastStoredTimestamp: string | null = null;
-            let timestampToUse = '2025-09-01T10:50:15'; // Fallback timestamp
+            const nowIsoString = new Date().toISOString().split('.')[0];
+            let timestampToUse = nowIsoString; // Fallback timestamp
             
             try {
                 // Show which user we're processing for
-                const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-                const userId = config.get<string>('userId', '');
+                const userId = await getUserIdSecret();
                 this.outputChannel.appendLine(`Processing for user: ${userId || 'Not configured'}`);
                 
                 // Check if PostgreSQL client is initialized
@@ -694,24 +778,28 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
      */
     async showStatus(): Promise<void> {
         const status = this.getStatus();
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
         
-        // Get database configuration info
-        const localDbPath = config.get<string>('databasePath') || 'Not configured';
-        const postgresHost = config.get<string>('postgresHost') || '3.108.9.100';
-        const postgresPort = config.get<number>('postgresPort') || 5432;
-        const postgresDatabase = config.get<string>('postgresDatabase') || 'Not configured';
-        const postgresTable = config.get<string>('postgresTableName') || 'cursor_query_results';
-        const userId = config.get<string>('userId') || 'Not configured';
+        const localDbPath = await getDatabasePathSecret() || 'Not configured';
+        const userId = await getUserIdSecret() || 'Not configured';
+        const { host: postgresHost, port: postgresPort, database: postgresDatabase, tableName: postgresTable } = POSTGRES_DEFAULTS;
         
-        // Check PostgreSQL connection status
-        let postgresStatus = 'Not initialized';
-        if (this.postgresManager.isInitialized()) {
-            postgresStatus = '✅ Connected';
-        } else if (postgresDatabase !== 'Not configured') {
-            postgresStatus = '⚠️ Configured but not connected';
+        const postgresStatus = this.postgresManager.isInitialized() ? '✅ Connected' : '⚠️ Not connected';
+        
+        // Get auto-startup status
+        let autoStartupInfo: string[] = [];
+        if (this.autoStartupManager) {
+            const autoStatus = this.autoStartupManager.getStatus();
+            autoStartupInfo = [
+                '',
+                '🚀 **AUTO-STARTUP**',
+                `🔄 Enabled: ${autoStatus.autoStartupEnabled ? 'Yes' : 'No'}`,
+                `🆕 Always Start on Open: ${autoStatus.alwaysStartOnOpen ? 'Yes' : 'No'}`,
+                `🔄 Behavior: Start automatically when VS Code/Cursor opens`,
+                `⏰ No Timeout: Scheduler can be stopped indefinitely`,
+                `🚀 Recovery: Only on VS Code/Cursor restart`,
+            ];
         }
-        
+
         const statusText = [
             '📊 Prompt Sync Status',
             '',
@@ -722,6 +810,7 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
             `📈 Executions: ${status.executionCount}`,
             `❌ Errors: ${status.errorCount}`,
             `🕒 Last Execution: ${status.lastExecution ? status.lastExecution.toLocaleString() : 'Never'}`,
+            ...autoStartupInfo,
             '',
             '🗄️ **DATABASES**',
             `📂 Local Source: ${localDbPath === 'Not configured' ? '❌ Not configured' : '✅ Configured'}`,
@@ -763,7 +852,16 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
         } else {
             this.statusBarItem.text = `$(clock) Auto-Schedule (Off)`;
             this.statusBarItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
-            this.statusBarItem.tooltip = `Auto-scheduler stopped\nClick to start`;
+            
+            let tooltipText = `Auto-scheduler stopped\nClick to restart immediately`;
+            if (this.autoStartupManager) {
+                const status = this.autoStartupManager.getStatus();
+                tooltipText += `\n🆕 Will auto-start on next VS Code/Cursor launch`;
+                if (status.autoStartupEnabled) {
+                    tooltipText += `\n✅ Auto-startup: ALWAYS ON`;
+                }
+            }
+            this.statusBarItem.tooltip = tooltipText;
         }
     }
 
@@ -771,11 +869,8 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
      * Save state to workspace storage
      */
     private saveState(): void {
-        // Save settings globally so they work across all workspaces
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        config.update('autoSchedulerInterval', this.intervalMinutes, vscode.ConfigurationTarget.Global);
+        this.context.globalState.update('autoScheduler.intervalMinutes', this.intervalMinutes);
         
-        // These can remain in workspace state as they're session-specific
         this.context.workspaceState.update('autoScheduler.isRunning', this.isRunning);
         this.context.workspaceState.update('autoScheduler.executionCount', this.executionCount);
         this.context.workspaceState.update('autoScheduler.errorCount', this.errorCount);
@@ -786,9 +881,7 @@ ORDER BY tfb.client_rpc_send_time DESC;`;
      * Restore state from workspace storage
      */
     private restoreState(): void {
-        // Restore interval from global configuration (works across all workspaces)
-        const config = vscode.workspace.getConfiguration('cursorSqlRunner');
-        this.intervalMinutes = config.get<number>('autoSchedulerInterval', 60);
+        this.intervalMinutes = this.context.globalState.get('autoScheduler.intervalMinutes', 60);
         
         // Restore session-specific data from workspace state
         this.executionCount = this.context.workspaceState.get('autoScheduler.executionCount', 0);
