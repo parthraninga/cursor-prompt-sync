@@ -2,7 +2,7 @@
   "name": "cursor-prompt-sync",
   "displayName": "Cursor Prompt Sync",
   "description": "AI Prompt Analytics & PostgreSQL Integration with automatic setup and persistent connections for seamless Cursor prompt collection",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "YorkIE",
   "author": "York.IE",
   "repository": {
@@ -86,6 +86,16 @@
         "command": "cursor-sql-runner.showDatabaseInfo",
         "title": "Show Database Configuration",
         "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.cliAutoSetup",
+        "title": "CLI Auto-Setup (Environment Password)",
+        "category": "Cursor Prompt Sync"
+      },
+      {
+        "command": "cursor-sql-runner.resetConfiguration",
+        "title": "Reset All Configuration (Debug)",
+        "category": "Cursor Prompt Sync"
       }
     ],
     "menus": {
@@ -120,6 +130,10 @@
         },
         {
           "command": "cursor-sql-runner.showDatabaseInfo",
+          "when": "true"
+        },
+        {
+          "command": "cursor-sql-runner.cliAutoSetup",
           "when": "true"
         }
       ]

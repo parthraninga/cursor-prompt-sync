@@ -554,4 +554,28 @@ export class PostgresManager {
         }
     }
 
+    /**
+     * Clear PostgreSQL configuration and close connections (for debugging/reset)
+     */
+    async clearConfiguration(): Promise<void> {
+        try {
+            console.log('🗑️ Clearing PostgreSQL configuration...');
+            
+            // Close existing connections
+            if (this.pool) {
+                await this.pool.end();
+                this.pool = null;
+                console.log('✅ PostgreSQL connection pool closed');
+            }
+            
+            // Clear configuration
+            this.config = null;
+            console.log('✅ PostgreSQL configuration cleared');
+            
+        } catch (error: any) {
+            console.log(`⚠️ Error clearing PostgreSQL configuration: ${error.message}`);
+            // Don't throw - we want to continue the reset process
+        }
+    }
+
 }

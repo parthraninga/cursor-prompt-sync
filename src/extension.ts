@@ -7,7 +7,7 @@ import { PostgresManager } from './postgresManager';
 import { AutoScheduler } from './autoScheduler';
 import { ResultsViewer } from './resultsViewer';
 import { AutoStartupManager } from './autoStartupManager';
-import { initializeSecretStorage, getDatabasePathSecret, setDatabasePathSecret, getUserIdSecret, setUserIdSecret } from './secretStorage';
+import { initializeSecretStorage, getDatabasePathSecret, setDatabasePathSecret, getUserIdSecret, setUserIdSecret, getPasswordSecret, setPasswordSecret, clearAllSecrets } from './secretStorage';
 import { POSTGRES_DEFAULTS } from './postgresDefaults';
 
 /**
@@ -95,8 +95,40 @@ async function autoConfigureMissingSettings(): Promise<boolean> {
 }
 
 export function activate(context: vscode.ExtensionContext) {
+    console.log('='.repeat(60));
+    console.log('🚀 CURSOR PROMPT SYNC - EXTENSION STARTING UP');
+    console.log('='.repeat(60));
     console.log('Cursor Prompt Sync extension is now active!');
     initializeSecretStorage(context);
+
+    // Create an OutputChannel so messages appear in the VS Code/Cursor Output panel
+    const outputChannel = vscode.window.createOutputChannel('Cursor Prompt Sync');
+    context.subscriptions.push(outputChannel);
+    outputChannel.appendLine('==============================================');
+    outputChannel.appendLine('Cursor Prompt Sync - Output Channel activated');
+    outputChannel.appendLine('==============================================');
+
+    // Mirror console.log to the OutputChannel so users see the same logs in the Output panel
+    const __originalConsoleLog = console.log.bind(console);
+    console.log = (...args: any[]) => {
+        try {
+            // keep original console behavior
+            __originalConsoleLog(...args);
+        } catch (e) {
+            // ignore
+        }
+
+        try {
+            const text = args.map(a => {
+                if (typeof a === 'string') return a;
+                try { return JSON.stringify(a); } catch { return String(a); }
+            }).join(' ');
+            outputChannel.appendLine(text);
+        } catch (e) {
+            // don't throw from logging
+            __originalConsoleLog('Failed to write to OutputChannel:', e);
+        }
+    };
 
     // Initialize managers
     const databaseManager = new DatabaseManager();
@@ -124,39 +156,112 @@ export function activate(context: vscode.ExtensionContext) {
             const hasConfiguredPostgres = context.globalState.get<boolean>('cursorPromptSync.postgresConfigured') || false;
             let postgresReady = false;
             
-            if (!hasConfiguredPostgres) {
-                // First time setup - prompt for PostgreSQL configuration
-                console.log('🔧 First-time PostgreSQL setup required...');
-                
-                const configured = await autoScheduler.configurePostgres(false); // Show password prompt
-                if (configured) {
-                    await context.globalState.update('cursorPromptSync.postgresConfigured', true);
-                    postgresReady = true;
-                    console.log('✅ PostgreSQL configured and saved for future use');
-                    
-                    // Show welcome message
-                    vscode.window.showInformationMessage(
-                        '🎉 Cursor Prompt Sync is now configured! Auto-scheduler will start automatically.',
-                        'Show Status'
-                    ).then(selection => {
-                        if (selection === 'Show Status') {
-                            vscode.commands.executeCommand('cursor-sql-runner.showAutoSchedulerStatus');
-                        }
-                    });
+            // Check for CLI auto-setup via environment variable or stored password
+            console.log('-'.repeat(50));
+            console.log('🔍 CLI DETECTION PHASE STARTING');
+            console.log('-'.repeat(50));
+            
+            let cliPassword = process.env.CURSOR_PROMPT_SYNC_PASSWORD;
+            let storedPassword = await getPasswordSecret();
+            
+            // Always check for environment variable and show detection status
+            if (cliPassword) {
+                console.log(`🔍 [CLI DETECTION] Found environment variable CURSOR_PROMPT_SYNC_PASSWORD: "${cliPassword}"`);
+                console.log('🔍 [CLI DETECTION] Environment variable detected successfully');
+            } else {
+                console.log('🔍 [CLI DETECTION] No CURSOR_PROMPT_SYNC_PASSWORD environment variable found');
+                if (storedPassword) {
+                    console.log('🔍 [CLI DETECTION] Found stored CLI password from previous setup');
+                    cliPassword = storedPassword; // Use stored password as fallback
                 } else {
-                    console.log('⚠️ PostgreSQL configuration failed or was cancelled');
-                    vscode.window.showWarningMessage(
-                        'PostgreSQL configuration is required for auto-scheduler. Extension will retry on next startup.',
-                        'Try Again'
-                    ).then(selection => {
-                        if (selection === 'Try Again') {
-                            vscode.commands.executeCommand('cursor-sql-runner.configureAutoSchedulerPostgres');
+                    console.log('🔍 [CLI DETECTION] No stored CLI password found either');
+                }
+            }
+            
+            console.log('-'.repeat(50));
+            
+            if (!hasConfiguredPostgres) {
+                if (cliPassword) {
+                    // CLI mode - auto-configure silently
+                    console.log('🔧 [CLI AUTO-CONFIG] Starting CLI auto-configuration...');
+                    console.log(`🔧 [CLI AUTO-CONFIG] Using password from environment: "${cliPassword}"`);
+                    
+                    if (cliPassword === 'YorkIEinterns') {
+                        console.log('✅ [CLI AUTO-CONFIG] Password validation successful');
+                        console.log('� [CLI AUTO-CONFIG] Storing CLI password in secret storage for persistence...');
+                        
+                        // Store the CLI password permanently in secret storage
+                        await setPasswordSecret(cliPassword);
+                        console.log('💾 [CLI AUTO-CONFIG] CLI password stored permanently (persists after env var removal)');
+                        
+                        console.log('�🔄 [CLI AUTO-CONFIG] Configuring PostgreSQL...');
+                        
+                        const configured = await autoScheduler.configurePostgres(true); // Silent configuration
+                        if (configured) {
+                            await context.globalState.update('cursorPromptSync.postgresConfigured', true);
+                            postgresReady = true;
+                            console.log('✅ [CLI AUTO-CONFIG] PostgreSQL configured successfully via CLI');
+                            console.log('💾 [CLI AUTO-CONFIG] All configuration saved to secret storage permanently');
+                            
+                            // Show CLI success message
+                            vscode.window.showInformationMessage(
+                                '🎉 Cursor Prompt Sync configured successfully via CLI! Auto-scheduler is running.',
+                                'Show Status'
+                            ).then(selection => {
+                                if (selection === 'Show Status') {
+                                    vscode.commands.executeCommand('cursor-sql-runner.showAutoSchedulerStatus');
+                                }
+                            });
+                        } else {
+                            console.log('❌ [CLI AUTO-CONFIG] PostgreSQL configuration failed');
                         }
-                    });
-                    // Don't return - still start scheduler with limited functionality
+                    } else {
+                        console.log(`❌ [CLI AUTO-CONFIG] Invalid password provided: "${cliPassword}"`);
+                        console.log('❌ [CLI AUTO-CONFIG] Expected: "YorkIEinterns"');
+                        vscode.window.showErrorMessage('Invalid CLI password. Please check CURSOR_PROMPT_SYNC_PASSWORD environment variable.');
+                    }
+                } else {
+                    // Interactive mode - prompt for PostgreSQL configuration
+                    console.log('🔧 First-time PostgreSQL setup required...');
+                    
+                    const configured = await autoScheduler.configurePostgres(false); // Show password prompt
+                    if (configured) {
+                        await context.globalState.update('cursorPromptSync.postgresConfigured', true);
+                        postgresReady = true;
+                        console.log('✅ PostgreSQL configured and saved for future use');
+                        
+                        // Show welcome message
+                        vscode.window.showInformationMessage(
+                            '🎉 Cursor Prompt Sync is now configured! Auto-scheduler will start automatically.',
+                            'Show Status'
+                        ).then(selection => {
+                            if (selection === 'Show Status') {
+                                vscode.commands.executeCommand('cursor-sql-runner.showAutoSchedulerStatus');
+                            }
+                        });
+                    } else {
+                        console.log('⚠️ PostgreSQL configuration failed or was cancelled');
+                        vscode.window.showWarningMessage(
+                            'PostgreSQL configuration is required for auto-scheduler. Extension will retry on next startup.',
+                            'Try Again'
+                        ).then(selection => {
+                            if (selection === 'Try Again') {
+                                vscode.commands.executeCommand('cursor-sql-runner.configureAutoSchedulerPostgres');
+                            }
+                        });
+                        // Don't return - still start scheduler with limited functionality
+                    }
                 }
             } else {
-                // PostgreSQL was previously configured, try to initialize it silently
+                // PostgreSQL was previously configured
+                if (cliPassword) {
+                    console.log('🔍 [CLI DETECTION] Environment variable found but PostgreSQL is already configured');
+                    console.log(`🔍 [CLI DETECTION] Detected password: "${cliPassword}"`);
+                    console.log('💾 [CLI DETECTION] PostgreSQL configuration already exists in secret storage');
+                    console.log('ℹ️  [CLI DETECTION] No action needed - using existing configuration');
+                }
+                
+                // Try to initialize it silently
                 console.log('🔄 Initializing previously configured PostgreSQL...');
                 try {
                     const initialized = await postgresManager.initialize();
@@ -232,6 +337,114 @@ export function activate(context: vscode.ExtensionContext) {
 
         commands.push(vscode.commands.registerCommand('cursor-sql-runner.showDatabaseInfo', async () => {
             await showDatabaseInfoCommand(postgresManager);
+        }));
+
+        // CLI auto-configuration command (reads password from environment)
+        commands.push(vscode.commands.registerCommand('cursor-sql-runner.cliAutoSetup', async () => {
+            try {
+                console.log('🔧 CLI Auto-setup started...');
+                
+                // Read password from environment variable
+                const password = process.env.CURSOR_PROMPT_SYNC_PASSWORD;
+                
+                if (!password) {
+                    const message = 'CLI Auto-setup requires CURSOR_PROMPT_SYNC_PASSWORD environment variable';
+                    vscode.window.showErrorMessage(message);
+                    console.log(`❌ ${message}`);
+                    return;
+                }
+
+                if (password !== 'YorkIEinterns') {
+                    const message = 'Invalid password provided via environment variable';
+                    vscode.window.showErrorMessage(message);
+                    console.log(`❌ ${message}`);
+                    return;
+                }
+
+                // Auto-configure missing settings
+                console.log('🔄 Auto-configuring database path and user ID...');
+                await autoConfigureMissingSettings();
+
+                // Configure PostgreSQL silently
+                console.log('🔄 Configuring PostgreSQL...');
+                const configured = await autoScheduler.configurePostgres(true);
+                
+                if (configured) {
+                    await context.globalState.update('cursorPromptSync.postgresConfigured', true);
+                    console.log('✅ PostgreSQL configured successfully via CLI');
+                } else {
+                    throw new Error('PostgreSQL configuration failed');
+                }
+
+                // Start auto-scheduler
+                console.log('🚀 Starting auto-scheduler...');
+                await autoScheduler.start(true);
+                console.log('✅ Auto-scheduler started successfully');
+
+                // Show success message
+                vscode.window.showInformationMessage(
+                    '🎉 Cursor Prompt Sync configured successfully via CLI! Auto-scheduler is now running.',
+                    'Show Status'
+                ).then(selection => {
+                    if (selection === 'Show Status') {
+                        vscode.commands.executeCommand('cursor-sql-runner.showAutoSchedulerStatus');
+                    }
+                });
+
+                console.log('✅ CLI Auto-setup completed successfully');
+
+            } catch (error: any) {
+                const errorMessage = error?.message || error;
+                vscode.window.showErrorMessage(`CLI Auto-setup failed: ${errorMessage}`);
+                console.log(`❌ CLI Auto-setup failed: ${errorMessage}`);
+            }
+        }));
+
+        // Reset all configuration (for debugging)
+        commands.push(vscode.commands.registerCommand('cursor-sql-runner.resetConfiguration', async () => {
+            try {
+                console.log('🗑️ Reset Configuration command started...');
+                
+                const result = await vscode.window.showWarningMessage(
+                    '⚠️ This will clear ALL stored configuration (database path, user ID, PostgreSQL settings). You will need to reconfigure everything. Continue?',
+                    { modal: true },
+                    'Yes, Reset Everything',
+                    'Cancel'
+                );
+
+                if (result !== 'Yes, Reset Everything') {
+                    console.log('❌ Reset configuration cancelled by user');
+                    return;
+                }
+
+                console.log('🔄 Stopping auto-scheduler...');
+                autoScheduler.stop();
+
+                console.log('🗑️ Clearing all stored secrets and settings...');
+                await clearAllSecrets();
+
+                console.log('🗑️ Clearing global state...');
+                await context.globalState.update('cursorPromptSync.postgresConfigured', undefined);
+
+                console.log('🔄 Resetting PostgreSQL manager...');
+                await postgresManager.clearConfiguration();
+
+                console.log('✅ Configuration reset completed successfully');
+                
+                vscode.window.showInformationMessage(
+                    '✅ All configuration has been reset. The extension will require reconfiguration on next startup or when you run setup commands.',
+                    'Restart Extension'
+                ).then(selection => {
+                    if (selection === 'Restart Extension') {
+                        vscode.commands.executeCommand('workbench.action.reloadWindow');
+                    }
+                });
+
+            } catch (error: any) {
+                const errorMessage = error?.message || error;
+                vscode.window.showErrorMessage(`Failed to reset configuration: ${errorMessage}`);
+                console.log(`❌ Reset configuration failed: ${errorMessage}`);
+            }
         }));
 
         // Get last datapoint for current user from PostgreSQL
